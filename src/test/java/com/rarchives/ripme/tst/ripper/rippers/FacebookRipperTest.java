@@ -376,6 +376,63 @@ public class FacebookRipperTest {
         assertTrue(urls.get(0).contains("oh=00_AQCM0g4qNjFs5WqQ"), "CDN auth params must be preserved");
     }
 
+    @Test
+    public void testPhotoPaginationRespectsDiscoveryBudget() throws Exception {
+        String listingHtml = "<html><body><script type=\"application/json\">"
+                + "[\"DTSGInitialData\",[],{\"token\":\"DTSGTOKEN123\"}]"
+                + "[\"LSD\",[],{\"token\":\"LSDTOKEN456\"}]"
+                + "\"USER_ID\":\"123456\""
+                + "\"YXBwX2NvbGxlY3Rpb246VEVTVENPTExFQ1RJT04=\",\"name\":\"Test's Photos\","
+                + "\"url\":\"https:\\/\\/www.facebook.com\\/example\\/photos_of\""
+                + "\"__typename\":\"TimelineAppCollectionPhotosRenderer\","
+                + "\"page_info\":{\"end_cursor\":\"C1\",\"has_next_page\":true}"
+                + "</script></body></html>";
+        Document listing = Jsoup.parse(listingHtml, "https://www.facebook.com/example/photos");
+
+        Map<String, String> graphqlPages = new HashMap<>();
+        for (int page = 1; page <= 5; page++) {
+            String cursorKey = page == 1 ? "C1" : "C" + page;
+            String nextCursor = "C" + (page + 1);
+            boolean hasNext = page < 5;
+            StringBuilder edges = new StringBuilder();
+            for (int photo = 1; photo <= 8; photo++) {
+                int id = (page - 1) * 8 + photo;
+                if (edges.length() > 0) {
+                    edges.append(',');
+                }
+                edges.append("{\"node\":{\"node\":{\"viewer_image\":{\"uri\":\"https:\\/\\/scontent.xx.fbcdn.net\\/v\\/p")
+                        .append(id).append(".jpg\"}}}}");
+            }
+            graphqlPages.put(cursorKey,
+                    "{\"data\":{\"node\":{\"pageItems\":{\"edges\":["
+                            + edges
+                            + "],\"page_info\":{\"end_cursor\":\"" + nextCursor
+                            + "\",\"has_next_page\":" + hasNext + "}}}}}");
+        }
+
+        BudgetedGraphqlFacebookRipper ripper =
+                new BudgetedGraphqlFacebookRipper(new URL("https://www.facebook.com/example/photos"),
+                        graphqlPages, 16);
+        List<String> urls = ripper.extract(listing);
+
+        assertEquals(16, urls.size(), "Pagination should stop once the discovery budget is reached");
+    }
+
+    private static class BudgetedGraphqlFacebookRipper extends GraphqlFacebookRipper {
+        private final int budget;
+
+        BudgetedGraphqlFacebookRipper(URL url, Map<String, String> graphqlPages, int budget)
+                throws java.io.IOException {
+            super(url, graphqlPages);
+            this.budget = budget;
+        }
+
+        @Override
+        protected int getPhotoDiscoveryBudget() {
+            return budget;
+        }
+    }
+
     private static class CrawlingFacebookRipper extends TestableFacebookRipper {
         private final Map<String, Document> photoPages;
 

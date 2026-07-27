@@ -13,6 +13,7 @@ import org.jsoup.parser.Parser;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 
+import java.io.File;
 import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.net.MalformedURLException;
@@ -116,8 +117,11 @@ public class FacebookRipper extends AbstractHTMLRipper {
     private static final Pattern PHOTO_FILE_ID_PATTERN = Pattern.compile(
             "/([\\d_]+_n\\.(?:jpe?g|png|webp|gif))", Pattern.CASE_INSENSITIVE);
     private static final Pattern OH_PARAM_PATTERN = Pattern.compile("[?&]oh=([^&]+)");
+    private static final Pattern IMAGE_FILE_EXT_PATTERN = Pattern.compile(
+            "\\.(jpe?g|png|webp|gif)$", Pattern.CASE_INSENSITIVE);
 
     private Map<String, String> facebookCookies = new LinkedHashMap<>();
+    private Integer cachedPhotoDiscoveryBudget;
 
     public FacebookRipper(URL url) throws IOException {
         super(url);
@@ -226,6 +230,15 @@ public class FacebookRipper extends AbstractHTMLRipper {
 
     @Override
     protected List<String> getURLsFromPage(Document page) throws UnsupportedEncodingException {
+        cachedPhotoDiscoveryBudget = null;
+        int budget = getPhotoDiscoveryBudget();
+        if (budget < Integer.MAX_VALUE) {
+            int maxDownloads = Utils.getConfigInteger("maxdownloads", -1);
+            int existing = countExistingImageFiles();
+            logger.info("Facebook photo discovery budget: {} (maxdownloads={} + {} already on disk)",
+                    budget, maxDownloads, existing);
+        }
+
         Set<String> allMedia = new LinkedHashSet<>();
         // Photo listing HTML only embeds tiny grid thumbnails; full photos come from GraphQL below.
         collectMediaFromDocument(page, allMedia, !isPhotoListingPage());
@@ -419,6 +432,11 @@ public class FacebookRipper extends AbstractHTMLRipper {
             if (i == 0) {
                 firstResult = result;
             }
+            if (countUniquePhotos(allMedia) >= getPhotoDiscoveryBudget()) {
+                logger.info("Facebook photo discovery budget reached ({} unique photo(s)); "
+                        + "skipping remaining collections", countUniquePhotos(allMedia));
+                break;
+            }
         }
         return combined;
     }
@@ -479,6 +497,12 @@ public class FacebookRipper extends AbstractHTMLRipper {
             }
             logger.info("Facebook GraphQL photo pagination page {}: {} photo(s), {} total in collection",
                     pages, pagePhotos, newUrls);
+
+            if (countUniquePhotos(allMedia) >= getPhotoDiscoveryBudget()) {
+                logger.info("Facebook photo pagination stopping at {} unique photo(s) (discovery budget reached)",
+                        countUniquePhotos(allMedia));
+                break;
+            }
 
             cursor = firstMatch(response, END_CURSOR_PATTERN);
             hasNext = "true".equals(firstMatch(response, HAS_NEXT_PAGE_PATTERN));
@@ -1041,7 +1065,54 @@ public class FacebookRipper extends AbstractHTMLRipper {
 
     @Override
     protected void downloadURL(URL url, int index) {
-        addURLToDownload(url, getPrefix(index));
+        addURLToDownload(url, getPrefix(index), "", this.url.toExternalForm(),
+                facebookCookies.isEmpty() ? null : facebookCookies);
+    }
+
+    /**
+     * When {@code maxdownloads} is set, only discover enough photos to fill remaining slots
+     * plus any images already saved in the album folder.
+     */
+    protected int getPhotoDiscoveryBudget() {
+        if (cachedPhotoDiscoveryBudget != null) {
+            return cachedPhotoDiscoveryBudget;
+        }
+        int maxDownloads = Utils.getConfigInteger("maxdownloads", -1);
+        if (maxDownloads <= 0) {
+            cachedPhotoDiscoveryBudget = Integer.MAX_VALUE;
+        } else {
+            cachedPhotoDiscoveryBudget = maxDownloads + countExistingImageFiles();
+        }
+        return cachedPhotoDiscoveryBudget;
+    }
+
+    private int countExistingImageFiles() {
+        File dir = this.workingDir;
+        if (dir == null || !dir.isDirectory()) {
+            return 0;
+        }
+        File[] files = dir.listFiles();
+        if (files == null) {
+            return 0;
+        }
+        int count = 0;
+        for (File file : files) {
+            if (file.isFile() && IMAGE_FILE_EXT_PATTERN.matcher(file.getName()).find()) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private int countUniquePhotos(Set<String> allMedia) {
+        Set<String> keys = new LinkedHashSet<>();
+        for (String mediaUrl : allMedia) {
+            if (mediaUrl == null || VIDEO_URL_PATTERN.matcher(mediaUrl).find()) {
+                continue;
+            }
+            keys.add(photoDedupKey(upgradePhotoUrl(mediaUrl)));
+        }
+        return keys.size();
     }
 
     private void addMetaMedia(Document page, Set<String> found, String selector) {
