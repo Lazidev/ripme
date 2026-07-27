@@ -263,6 +263,45 @@ public class FacebookRipperTest {
     }
 
     @Test
+    public void testGraphqlPaginationUsesViewerImageNotThumbnail() throws Exception {
+        // GraphQL responses embed both viewer_image (full-res) and thumbnail (s206x206) for each
+        // photo. Pagination must use viewer_image only; thumbnails would be filtered out (<320px).
+        String base = "https://scontent.xx.fbcdn.net/v/t51.82787-15/622604539_18555344569004556_n.jpg";
+        String listingHtml = "<html><body><script type=\"application/json\">"
+                + "[\"DTSGInitialData\",[],{\"token\":\"DTSGTOKEN123\"}]"
+                + "[\"LSD\",[],{\"token\":\"LSDTOKEN456\"}]"
+                + "\"USER_ID\":\"123456\""
+                + "\"YXBwX2NvbGxlY3Rpb246VEVTVENPTExFQ1RJT04=\",\"name\":\"Test's Photos\","
+                + "\"url\":\"https:\\/\\/www.facebook.com\\/example\\/photos_of\""
+                + "\"__typename\":\"TimelineAppCollectionPhotosRenderer\","
+                + "\"page_info\":{\"end_cursor\":\"C1\",\"has_next_page\":true}"
+                + "</script></body></html>";
+        Document listing = Jsoup.parse(listingHtml, "https://www.facebook.com/example/photos");
+
+        Map<String, String> graphqlPages = new HashMap<>();
+        graphqlPages.put("C1",
+                "{\"data\":{\"node\":{\"pageItems\":{\"edges\":["
+                        + "{\"node\":{\"node\":{"
+                        + "\"viewer_image\":{\"uri\":\"" + base + "?oh=viewer1\"},"
+                        + "\"thumbnail\":\"" + base + "?stp=dst-jpg_s206x206&oh=thumb1\""
+                        + "}}},"
+                        + "{\"node\":{\"node\":{"
+                        + "\"viewer_image\":{\"uri\":\"https:\\/\\/scontent.xx.fbcdn.net\\/v\\/photo2_n.jpg?oh=viewer2\"},"
+                        + "\"thumbnail\":\"https:\\/\\/scontent.xx.fbcdn.net\\/v\\/photo2_n.jpg?stp=dst-jpg_s206x206\""
+                        + "}}}"
+                        + "],\"page_info\":{\"end_cursor\":\"C2\",\"has_next_page\":false}}}}}");
+
+        GraphqlFacebookRipper ripper =
+                new GraphqlFacebookRipper(new URL("https://www.facebook.com/example/photos"), graphqlPages);
+        List<String> urls = ripper.extract(listing);
+
+        assertEquals(2, urls.size(), "Each paginated photo should resolve to one full-resolution viewer_image");
+        assertTrue(urls.contains(base + "?oh=viewer1"));
+        assertTrue(urls.contains("https://scontent.xx.fbcdn.net/v/photo2_n.jpg?oh=viewer2"));
+        assertTrue(urls.stream().noneMatch(u -> u.contains("s206x206")), "Thumbnails must not be downloaded");
+    }
+
+    @Test
     public void testPhotoListingPaginatesEntireAlbumViaGraphql() throws Exception {
         // A /photos listing embeds the tokens needed to replay Facebook's GraphQL pagination. The
         // ripper must walk every page (following end_cursor/has_next_page) and collect each photo's

@@ -104,6 +104,15 @@ public class FacebookRipper extends AbstractHTMLRipper {
     private static final Pattern END_CURSOR_PATTERN = Pattern.compile("\"end_cursor\":\"([^\"]+)\"");
     private static final Pattern HAS_NEXT_PAGE_PATTERN = Pattern.compile("\"has_next_page\":(true|false)");
     private static final Pattern GRAPHQL_ERROR_PATTERN = Pattern.compile("\"errors\"\\s*:\\s*\\[");
+    // GraphQL photo pagination returns each photo's full-resolution URL in viewer_image.uri; the same
+    // response also carries s206x206 thumbnail URLs that must not be used for download.
+    private static final Pattern VIEWER_IMAGE_URI_PATTERN = Pattern.compile(
+            "\"viewer_image\"\\s*:\\s*\\{.*?\"uri\"\\s*:\\s*\"(https?:\\/\\/[^\"]+?)\"",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    // Unique filename segment in fbcdn paths (e.g. 622604539_18555344569004556_8789920462640292891_n.jpg).
+    private static final Pattern PHOTO_FILE_ID_PATTERN = Pattern.compile(
+            "/([\\d_]+_n\\.(?:jpe?g|png|webp|gif))", Pattern.CASE_INSENSITIVE);
+    private static final Pattern OH_PARAM_PATTERN = Pattern.compile("[?&]oh=([^&]+)");
 
     private Map<String, String> facebookCookies = new LinkedHashMap<>();
 
@@ -250,7 +259,7 @@ public class FacebookRipper extends AbstractHTMLRipper {
                     bestVideoByKey.put(key, new ScoredUrl(mediaUrl, info.score));
                 }
             } else {
-                String key = urlPath(mediaUrl);
+                String key = photoDedupKey(mediaUrl);
                 long size = imageSizeScore(mediaUrl);
                 ScoredUrl existing = bestImageByKey.get(key);
                 if (existing == null || size > existing.score) {
@@ -287,6 +296,8 @@ public class FacebookRipper extends AbstractHTMLRipper {
         if (!manifestFallback.isEmpty()) {
             return manifestFallback;
         }
+        logger.info("Facebook: {} raw media URL(s) discovered, {} unique photo(s) queued for download",
+                allMedia.size(), images.size());
         return images;
     }
 
@@ -446,20 +457,14 @@ public class FacebookRipper extends AbstractHTMLRipper {
                         pages, friendly);
                 break;
             }
-            int before = allMedia.size();
-            Matcher m = MEDIA_URL_PATTERN.matcher(response);
-            while (m.find()) {
-                String mediaUrl = unescapeJsonUrl(m.group());
-                if (mediaUrl != null && !JUNK_URL_PATTERN.matcher(mediaUrl).find()) {
-                    allMedia.add(mediaUrl);
-                }
-            }
-            int pageUrls = allMedia.size() - before;
-            newUrls += pageUrls;
-            if (pageUrls == 0) {
-                logger.warn("Facebook GraphQL photo pagination page {} returned no image URLs", pages);
+            int pagePhotos = extractViewerImagesFromGraphql(response, allMedia);
+            newUrls += pagePhotos;
+            if (pagePhotos == 0) {
+                logger.warn("Facebook GraphQL photo pagination page {} returned no viewer_image URLs", pages);
                 break;
             }
+            logger.info("Facebook GraphQL photo pagination page {}: {} photo(s), {} total in collection",
+                    pages, pagePhotos, newUrls);
 
             cursor = firstMatch(response, END_CURSOR_PATTERN);
             hasNext = "true".equals(firstMatch(response, HAS_NEXT_PAGE_PATTERN));
@@ -472,7 +477,7 @@ public class FacebookRipper extends AbstractHTMLRipper {
                 }
             }
         }
-        logger.info("Facebook GraphQL photo pagination fetched {} page(s), {} image URL(s) "
+        logger.info("Facebook GraphQL photo pagination fetched {} page(s), {} photo(s) "
                         + "(collection={}, doc_id={})",
                 pages, newUrls, collectionId, docId);
         return new PaginationResult(true, ctx.hasNextPage, pages, newUrls, sawError);
@@ -833,6 +838,40 @@ public class FacebookRipper extends AbstractHTMLRipper {
     private static String urlPath(String url) {
         int q = url.indexOf('?');
         return q >= 0 ? url.substring(0, q) : url;
+    }
+
+    /**
+     * Dedup key for a Facebook photo CDN URL. The base path is shared between full-resolution and
+     * thumbnail renditions, so stripping the query string is correct; when the path is ambiguous we
+     * fall back to the {@code oh} token which is unique per served image.
+     */
+    private static String photoDedupKey(String url) {
+        Matcher fileId = PHOTO_FILE_ID_PATTERN.matcher(url);
+        if (fileId.find()) {
+            return fileId.group(1);
+        }
+        Matcher oh = OH_PARAM_PATTERN.matcher(url);
+        if (oh.find()) {
+            return "oh:" + oh.group(1);
+        }
+        return urlPath(url);
+    }
+
+    /**
+     * Pulls full-resolution {@code viewer_image.uri} values from a GraphQL pagination response.
+     *
+     * @return number of new photo URLs added
+     */
+    private int extractViewerImagesFromGraphql(String response, Set<String> allMedia) {
+        int added = 0;
+        Matcher m = VIEWER_IMAGE_URI_PATTERN.matcher(response);
+        while (m.find()) {
+            String mediaUrl = unescapeJsonUrl(m.group(1));
+            if (mediaUrl != null && !JUNK_URL_PATTERN.matcher(mediaUrl).find() && allMedia.add(mediaUrl)) {
+                added++;
+            }
+        }
+        return added;
     }
 
     /**
