@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.277-1-f88a8f6",
-  "currentHash": "dd41e07bda210a36832d9d8bb973de4b5cbdeaff26e6662f8ca1d3f22efe6e04",
+  "latestVersion": "2.1.278-1-c9fdc54",
+  "currentHash": "1de02f6ed68781a43a0e422a9d0c050fe3987b82e30cfeda5b579dfcfeb83221",
   "changeList": [
+    "2.1.278-1-c9fdc54: Merge branch 'main' of https://github.com/Lazidev/ripme",
+    "2.1.278-1-c9fdc54: Built at 2026-07-27T10:38:59Z",
     "2.1.277-1-f88a8f6: ﻿Fix Twitter/X profile URLs with harmless query params.",
     "2.1.277-1-f88a8f6: Built at 2026-07-20T10:43:27Z",
     "2.1.276-1-b7a6249: Point updater and docs at Lazidev/ripme after repo transfer.",
