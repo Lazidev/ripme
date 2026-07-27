@@ -121,6 +121,7 @@ public class FacebookRipper extends AbstractHTMLRipper {
             "\\.(jpe?g|png|webp|gif)$", Pattern.CASE_INSENSITIVE);
 
     private Map<String, String> facebookCookies = new LinkedHashMap<>();
+    private boolean loadedCookiesFromFirefox = false;
     private Integer cachedPhotoDiscoveryBudget;
 
     public FacebookRipper(URL url) throws IOException {
@@ -201,7 +202,7 @@ public class FacebookRipper extends AbstractHTMLRipper {
 
     private Http newFacebookRequest(URL targetUrl, String referrer) {
         return Http.url(targetUrl)
-                .userAgent(USER_AGENT)
+                .userAgent(browserUserAgent())
                 .referrer(referrer)
                 .ignoreContentType()
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
@@ -276,12 +277,11 @@ public class FacebookRipper extends AbstractHTMLRipper {
                     bestVideoByKey.put(key, new ScoredUrl(mediaUrl, info.score));
                 }
             } else {
-                String upgraded = upgradePhotoUrl(mediaUrl);
-                String key = photoDedupKey(upgraded);
-                long size = imageSizeScore(upgraded);
+                String key = photoDedupKey(mediaUrl);
+                long size = imageSizeScore(mediaUrl);
                 ScoredUrl existing = bestImageByKey.get(key);
                 if (existing == null || size > existing.score) {
-                    bestImageByKey.put(key, new ScoredUrl(upgraded, size));
+                    bestImageByKey.put(key, new ScoredUrl(mediaUrl, size));
                 }
             }
         }
@@ -722,7 +722,7 @@ public class FacebookRipper extends AbstractHTMLRipper {
     protected String executeGraphqlQuery(String friendlyName, String lsd, Map<String, String> formData)
             throws IOException {
         Http request = Http.url("https://www.facebook.com/api/graphql/")
-                .userAgent(USER_AGENT)
+                .userAgent(browserUserAgent())
                 .referrer(this.url)
                 .ignoreContentType()
                 .header("X-FB-Friendly-Name", friendlyName)
@@ -904,43 +904,12 @@ public class FacebookRipper extends AbstractHTMLRipper {
         int added = 0;
         Matcher m = VIEWER_IMAGE_URI_PATTERN.matcher(response);
         while (m.find()) {
-            String mediaUrl = upgradePhotoUrl(unescapeJsonUrl(m.group(1)));
+            String mediaUrl = unescapeJsonUrl(m.group(1));
             if (mediaUrl != null && !JUNK_URL_PATTERN.matcher(mediaUrl).find() && allMedia.add(mediaUrl)) {
                 added++;
             }
         }
         return added;
-    }
-
-    /**
-     * Strips Facebook CDN resize/crop params ({@code stp}, {@code ctp}, {@code cstp}) so the CDN
-     * serves the original image instead of a grid thumbnail (e.g. {@code ctp=s80x80}).
-     */
-    private static String upgradePhotoUrl(String url) {
-        if (url == null || !url.contains("fbcdn.net")) {
-            return url;
-        }
-        int q = url.indexOf('?');
-        if (q < 0) {
-            return url;
-        }
-        String base = url.substring(0, q);
-        StringBuilder kept = new StringBuilder();
-        for (String param : url.substring(q + 1).split("&")) {
-            if (param.isEmpty()) {
-                continue;
-            }
-            int eq = param.indexOf('=');
-            String key = eq >= 0 ? param.substring(0, eq) : param;
-            if ("stp".equalsIgnoreCase(key) || "ctp".equalsIgnoreCase(key) || "cstp".equalsIgnoreCase(key)) {
-                continue;
-            }
-            if (kept.length() > 0) {
-                kept.append('&');
-            }
-            kept.append(param);
-        }
-        return kept.length() > 0 ? base + "?" + kept.toString() : base;
     }
 
     /**
@@ -1069,6 +1038,33 @@ public class FacebookRipper extends AbstractHTMLRipper {
                 facebookCookies.isEmpty() ? null : facebookCookies);
     }
 
+    @Override
+    protected Map<String, String> getDownloadRequestHeaders(URL url) {
+        if (url == null || url.getHost() == null || !url.getHost().contains("fbcdn.net")) {
+            return null;
+        }
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
+        headers.put("Accept-Language", "en-US,en;q=0.9");
+        headers.put("Origin", "https://www.facebook.com");
+        headers.put("Sec-Fetch-Dest", "image");
+        headers.put("Sec-Fetch-Mode", "no-cors");
+        headers.put("Sec-Fetch-Site", "cross-site");
+        return headers;
+    }
+
+    @Override
+    protected String getDownloadUserAgent(URL url) {
+        return browserUserAgent();
+    }
+
+    private String browserUserAgent() {
+        if (loadedCookiesFromFirefox) {
+            return FIREFOX_USER_AGENT;
+        }
+        return USER_AGENT;
+    }
+
     /**
      * When {@code maxdownloads} is set, only discover enough photos to fill remaining slots
      * plus any images already saved in the album folder.
@@ -1110,7 +1106,7 @@ public class FacebookRipper extends AbstractHTMLRipper {
             if (mediaUrl == null || VIDEO_URL_PATTERN.matcher(mediaUrl).find()) {
                 continue;
             }
-            keys.add(photoDedupKey(upgradePhotoUrl(mediaUrl)));
+            keys.add(photoDedupKey(mediaUrl));
         }
         return keys.size();
     }
@@ -1160,6 +1156,7 @@ public class FacebookRipper extends AbstractHTMLRipper {
             Map<String, String> cookies = FirefoxCookieUtils.readCookiesFromProfile(profilePath, hostPatterns);
             if (!cookies.isEmpty()) {
                 facebookCookies.putAll(cookies);
+                loadedCookiesFromFirefox = true;
             }
         }
 

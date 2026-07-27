@@ -66,7 +66,7 @@ public class FacebookRipperTest {
         List<String> urls = ripper.extract(doc);
 
         assertTrue(urls.contains("https://scontent.xx.fbcdn.net/v/photo1.jpg?oh=abc&oe=def"));
-        assertTrue(urls.contains("https://scontent.xx.fbcdn.net/v/photo2.png"));
+        assertTrue(urls.contains("https://scontent.xx.fbcdn.net/v/photo2.png?stp=xyz"));
     }
 
     @Test
@@ -117,8 +117,7 @@ public class FacebookRipperTest {
         List<String> urls = ripper.extract(doc);
 
         assertEquals(1, urls.size(), "All size-variants of one photo should collapse to a single URL");
-        assertTrue(urls.get(0).startsWith(base));
-        assertFalse(urls.get(0).contains("stp="), "Resize params should be stripped to request full resolution");
+        assertTrue(urls.get(0).contains("s480x480"), "The largest signed CDN variant should be kept intact");
     }
 
     @Test
@@ -337,13 +336,13 @@ public class FacebookRipperTest {
         List<String> urls = ripper.extract(listing);
 
         assertEquals(3, urls.size(), "Every paginated photo should be collected (listing HTML thumbnails are ignored)");
-        assertTrue(urls.stream().anyMatch(u -> u.contains("p1.jpg") && !u.contains("stp=")));
+        assertTrue(urls.stream().anyMatch(u -> u.contains("p1.jpg")));
         assertTrue(urls.stream().anyMatch(u -> u.contains("p2.jpg")));
         assertTrue(urls.stream().anyMatch(u -> u.contains("p3.jpg")));
     }
 
     @Test
-    public void testCometThumbnailUrlsAreUpgradedToFullResolution() throws Exception {
+    public void testCometThumbnailUrlsAreFilteredFromDownload() throws Exception {
         String thumb = "https://scontent.xx.fbcdn.net/v/t39.30808-1/464182999_8469015733196988_n.jpg"
                 + "?stp=cp0_dst-jpg_tt6&cstp=mx746x748&ctp=s80x80"
                 + "&_nc_cat=103&oh=00_AQCM0g4qNjFs5WqQ&oe=6A6D01F9";
@@ -370,10 +369,38 @@ public class FacebookRipperTest {
                 new NullCursorGraphqlFacebookRipper(new URL("https://www.facebook.com/example/photos"), graphqlPages);
         List<String> urls = ripper.extract(listing);
 
-        assertEquals(1, urls.size(), "One Comet thumbnail URL should upgrade to one full photo");
-        assertTrue(urls.stream().noneMatch(u -> u.contains("ctp=")), "ctp thumbnail param must be stripped");
-        assertTrue(urls.stream().noneMatch(u -> u.contains("stp=")), "stp resize param must be stripped");
-        assertTrue(urls.get(0).contains("oh=00_AQCM0g4qNjFs5WqQ"), "CDN auth params must be preserved");
+        assertEquals(0, urls.size(), "Grid thumbnail viewer_image URLs must be filtered, not rewritten");
+    }
+
+    @Test
+    public void testSignedCdnUrlsArePreservedForDownload() throws Exception {
+        String full = "https://scontent.xx.fbcdn.net/v/t39.30808-1/464182999_8469015733196988_n.jpg"
+                + "?stp=dst-jpg_s1080x1080_tt6&_nc_cat=103&oh=00_AQCM0g4qNjFs5WqQ&oe=6A6D01F9";
+        String listingHtml = "<html><body><script type=\"application/json\">"
+                + "[\"DTSGInitialData\",[],{\"token\":\"DTSGTOKEN123\"}]"
+                + "[\"LSD\",[],{\"token\":\"LSDTOKEN456\"}]"
+                + "\"USER_ID\":\"123456\""
+                + "\"YXBwX2NvbGxlY3Rpb246VEVTVENPTExFQ1RJT04=\",\"name\":\"Test's Photos\","
+                + "\"url\":\"https:\\/\\/www.facebook.com\\/example\\/photos_of\""
+                + "\"__typename\":\"TimelineAppCollectionPhotosRenderer\","
+                + "\"page_info\":{\"end_cursor\":null,\"has_next_page\":true}"
+                + "</script></body></html>";
+        Document listing = Jsoup.parse(listingHtml, "https://www.facebook.com/example/photos");
+
+        Map<String, String> graphqlPages = new HashMap<>();
+        graphqlPages.put(null,
+                "{\"data\":{\"node\":{\"pageItems\":{\"edges\":["
+                        + "{\"node\":{\"node\":{"
+                        + "\"viewer_image\":{\"uri\":\"" + full.replace("/", "\\/") + "\"}"
+                        + "}}}]"
+                        + ",\"page_info\":{\"has_next_page\":false}}}}}");
+
+        NullCursorGraphqlFacebookRipper ripper =
+                new NullCursorGraphqlFacebookRipper(new URL("https://www.facebook.com/example/photos"), graphqlPages);
+        List<String> urls = ripper.extract(listing);
+
+        assertEquals(1, urls.size());
+        assertEquals(full, urls.get(0), "Signed CDN URLs must be kept intact for download");
     }
 
     @Test
