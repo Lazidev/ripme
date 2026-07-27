@@ -58,9 +58,12 @@ public class FacebookRipper extends AbstractHTMLRipper {
     // deleted, so anything whose largest known dimension is below this is dropped before queueing.
     private static final long MIN_IMAGE_DIMENSION = 320L;
     // Facebook serves the same photo at many sizes; the size is encoded in the stp parameter
-    // (e.g. stp=..._s480x480_... or p960x960). These let us collapse size-variants to one best image.
+    // (e.g. stp=..._s480x480_... or p960x960). Comet grid thumbnails also use ctp=s80x80.
     private static final Pattern STP_PARAM_PATTERN = Pattern.compile("[?&]stp=([^&]+)");
+    private static final Pattern CTP_PARAM_PATTERN = Pattern.compile("[?&]ctp=([^&]+)");
+    private static final Pattern CSTP_PARAM_PATTERN = Pattern.compile("[?&]cstp=([^&]+)");
     private static final Pattern IMAGE_SIZE_PATTERN = Pattern.compile("[sp](\\d{2,5})x\\d{2,5}");
+    private static final Pattern CSTP_MX_SIZE_PATTERN = Pattern.compile("mx(\\d{2,5})x(\\d{2,5})");
     // Reel/video renditions carry a base64 "efg" blob describing the video_id, encode tag and bitrate.
     private static final Pattern EFG_PARAM_PATTERN = Pattern.compile("[?&]efg=([^&]+)");
     private static final Pattern VIDEO_ID_PATTERN = Pattern.compile("\"video_id\"\\s*:\\s*(\\d+)");
@@ -224,7 +227,8 @@ public class FacebookRipper extends AbstractHTMLRipper {
     @Override
     protected List<String> getURLsFromPage(Document page) throws UnsupportedEncodingException {
         Set<String> allMedia = new LinkedHashSet<>();
-        collectMediaFromDocument(page, allMedia);
+        // Photo listing HTML only embeds tiny grid thumbnails; full photos come from GraphQL below.
+        collectMediaFromDocument(page, allMedia, !isPhotoListingPage());
 
         // A photos/album listing page only embeds full-resolution URLs for the first handful of
         // photos; the rest are loaded by JavaScript as the user scrolls. Replay Facebook's own
@@ -259,11 +263,12 @@ public class FacebookRipper extends AbstractHTMLRipper {
                     bestVideoByKey.put(key, new ScoredUrl(mediaUrl, info.score));
                 }
             } else {
-                String key = photoDedupKey(mediaUrl);
-                long size = imageSizeScore(mediaUrl);
+                String upgraded = upgradePhotoUrl(mediaUrl);
+                String key = photoDedupKey(upgraded);
+                long size = imageSizeScore(upgraded);
                 ScoredUrl existing = bestImageByKey.get(key);
                 if (existing == null || size > existing.score) {
-                    bestImageByKey.put(key, new ScoredUrl(mediaUrl, size));
+                    bestImageByKey.put(key, new ScoredUrl(upgraded, size));
                 }
             }
         }
@@ -304,8 +309,11 @@ public class FacebookRipper extends AbstractHTMLRipper {
     /**
      * Scrapes every media URL embedded in a single Facebook document (video keys, OpenGraph/Twitter
      * meta tags and any media URL embedded in the page's escaped JSON) into {@code allMedia}.
+     *
+     * @param includeImages when false, skips og:image and embedded image URLs (photo listings only
+     *                      embed grid thumbnails there; full photos come from GraphQL pagination).
      */
-    private void collectMediaFromDocument(Document page, Set<String> allMedia) {
+    private void collectMediaFromDocument(Document page, Set<String> allMedia, boolean includeImages) {
         String rawHtml = page.html();
         // Facebook embeds almost all media inside JSON blobs in <script> tags where slashes are
         // escaped (https:\/\/...). Unescaping first is what allows the regex to actually match them.
@@ -315,20 +323,26 @@ public class FacebookRipper extends AbstractHTMLRipper {
         extractVideoKeys(rawHtml, HD_VIDEO_KEY_PATTERN, allMedia);
         extractVideoKeys(rawHtml, SD_VIDEO_KEY_PATTERN, allMedia);
 
-        addMetaMedia(page, allMedia, "meta[property=og:image]");
-        addMetaMedia(page, allMedia, "meta[property=og:image:secure_url]");
-        addMetaMedia(page, allMedia, "meta[property=og:video]");
-        addMetaMedia(page, allMedia, "meta[property=og:video:secure_url]");
-        addMetaMedia(page, allMedia, "meta[property=twitter:image]");
-        addMetaMedia(page, allMedia, "meta[property=twitter:player:stream]");
+        if (includeImages) {
+            addMetaMedia(page, allMedia, "meta[property=og:image]");
+            addMetaMedia(page, allMedia, "meta[property=og:image:secure_url]");
+            addMetaMedia(page, allMedia, "meta[property=og:video]");
+            addMetaMedia(page, allMedia, "meta[property=og:video:secure_url]");
+            addMetaMedia(page, allMedia, "meta[property=twitter:image]");
+            addMetaMedia(page, allMedia, "meta[property=twitter:player:stream]");
 
-        Matcher m = MEDIA_URL_PATTERN.matcher(unescapedHtml);
-        while (m.find()) {
-            String mediaUrl = unescapeJsonUrl(m.group());
-            if (mediaUrl != null && !JUNK_URL_PATTERN.matcher(mediaUrl).find()) {
-                allMedia.add(mediaUrl);
+            Matcher m = MEDIA_URL_PATTERN.matcher(unescapedHtml);
+            while (m.find()) {
+                String mediaUrl = unescapeJsonUrl(m.group());
+                if (mediaUrl != null && !JUNK_URL_PATTERN.matcher(mediaUrl).find()) {
+                    allMedia.add(mediaUrl);
+                }
             }
         }
+    }
+
+    private void collectMediaFromDocument(Document page, Set<String> allMedia) {
+        collectMediaFromDocument(page, allMedia, true);
     }
 
     /**
@@ -866,7 +880,7 @@ public class FacebookRipper extends AbstractHTMLRipper {
         int added = 0;
         Matcher m = VIEWER_IMAGE_URI_PATTERN.matcher(response);
         while (m.find()) {
-            String mediaUrl = unescapeJsonUrl(m.group(1));
+            String mediaUrl = upgradePhotoUrl(unescapeJsonUrl(m.group(1)));
             if (mediaUrl != null && !JUNK_URL_PATTERN.matcher(mediaUrl).find() && allMedia.add(mediaUrl)) {
                 added++;
             }
@@ -875,20 +889,71 @@ public class FacebookRipper extends AbstractHTMLRipper {
     }
 
     /**
+     * Strips Facebook CDN resize/crop params ({@code stp}, {@code ctp}, {@code cstp}) so the CDN
+     * serves the original image instead of a grid thumbnail (e.g. {@code ctp=s80x80}).
+     */
+    private static String upgradePhotoUrl(String url) {
+        if (url == null || !url.contains("fbcdn.net")) {
+            return url;
+        }
+        int q = url.indexOf('?');
+        if (q < 0) {
+            return url;
+        }
+        String base = url.substring(0, q);
+        StringBuilder kept = new StringBuilder();
+        for (String param : url.substring(q + 1).split("&")) {
+            if (param.isEmpty()) {
+                continue;
+            }
+            int eq = param.indexOf('=');
+            String key = eq >= 0 ? param.substring(0, eq) : param;
+            if ("stp".equalsIgnoreCase(key) || "ctp".equalsIgnoreCase(key) || "cstp".equalsIgnoreCase(key)) {
+                continue;
+            }
+            if (kept.length() > 0) {
+                kept.append('&');
+            }
+            kept.append(param);
+        }
+        return kept.length() > 0 ? base + "?" + kept.toString() : base;
+    }
+
+    /**
      * Ranks a Facebook image URL by its rendition size so we can keep only the largest variant of
-     * each photo. URLs without a resizing {@code stp} parameter are treated as the original.
+     * each photo. URLs without a resizing parameter are treated as the original.
      */
     private static long imageSizeScore(String url) {
-        Matcher stp = STP_PARAM_PATTERN.matcher(url);
-        if (!stp.find()) {
-            return Long.MAX_VALUE;
-        }
-        Matcher size = IMAGE_SIZE_PATTERN.matcher(stp.group(1));
         long best = -1;
+
+        Matcher ctp = CTP_PARAM_PATTERN.matcher(url);
+        if (ctp.find()) {
+            best = maxDimensionInToken(ctp.group(1), best);
+        }
+        Matcher stp = STP_PARAM_PATTERN.matcher(url);
+        if (stp.find()) {
+            best = maxDimensionInToken(stp.group(1), best);
+        }
+        if (best < 0) {
+            Matcher cstp = CSTP_PARAM_PATTERN.matcher(url);
+            if (cstp.find()) {
+                best = maxDimensionInToken(cstp.group(1), best);
+            }
+        }
+        return best < 0 ? Long.MAX_VALUE : best;
+    }
+
+    private static long maxDimensionInToken(String token, long currentBest) {
+        long best = currentBest;
+        Matcher size = IMAGE_SIZE_PATTERN.matcher(token);
         while (size.find()) {
             best = Math.max(best, Long.parseLong(size.group(1)));
         }
-        return best < 0 ? Long.MAX_VALUE : best;
+        Matcher mx = CSTP_MX_SIZE_PATTERN.matcher(token);
+        if (mx.find()) {
+            best = Math.max(best, Math.max(Long.parseLong(mx.group(1)), Long.parseLong(mx.group(2))));
+        }
+        return best;
     }
 
     /**
