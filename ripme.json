@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.281-1-ae8e6f9",
-  "currentHash": "4b845cbf34ffd00ae70dec6ec6c4ab2e5fdf34bb642abe41e3be1af40281ac89",
+  "latestVersion": "2.1.282-1-d9f857f",
+  "currentHash": "19172b4089a704c246fb3586402b47bbb30e9aa7bbce3ea7dbb395723d29e8b1",
   "changeList": [
+    "2.1.282-1-d9f857f: Unify Facebook photo tab folders per profile.",
+    "2.1.282-1-d9f857f: Built at 2026-07-27T11:56:59Z",
     "2.1.281-1-ae8e6f9: Fix Facebook CDN 403s by preserving signed photo URLs.",
     "2.1.281-1-ae8e6f9: Built at 2026-07-27T11:17:45Z",
     "2.1.280-1-ee24d6d: Cap Facebook photo pagination by maxdownloads and fix CDN 403s.",
