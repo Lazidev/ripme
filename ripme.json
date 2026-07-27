@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.279-1-0c63151",
-  "currentHash": "9548c64840cc21f1aed4c5af3e4fd52caad6e3a4f5929f96353ca56890c7f18f",
+  "latestVersion": "2.1.280-1-ee24d6d",
+  "currentHash": "5d78878b7c36f3510808c5323a796fd05a19538c38954111d9b8ff999be5835b",
   "changeList": [
+    "2.1.280-1-ee24d6d: Cap Facebook photo pagination by maxdownloads and fix CDN 403s.",
+    "2.1.280-1-ee24d6d: Built at 2026-07-27T11:01:39Z",
     "2.1.279-1-0c63151: Fix Facebook photo downloads serving grid thumbnails instead of full images.",
     "2.1.279-1-0c63151: Built at 2026-07-27T10:45:12Z",
     "2.1.278-1-c9fdc54: Merge branch 'main' of https://github.com/Lazidev/ripme",
