@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.278-1-c9fdc54",
-  "currentHash": "1de02f6ed68781a43a0e422a9d0c050fe3987b82e30cfeda5b579dfcfeb83221",
+  "latestVersion": "2.1.279-1-0c63151",
+  "currentHash": "9548c64840cc21f1aed4c5af3e4fd52caad6e3a4f5929f96353ca56890c7f18f",
   "changeList": [
+    "2.1.279-1-0c63151: Fix Facebook photo downloads serving grid thumbnails instead of full images.",
+    "2.1.279-1-0c63151: Built at 2026-07-27T10:45:12Z",
     "2.1.278-1-c9fdc54: Merge branch 'main' of https://github.com/Lazidev/ripme",
     "2.1.278-1-c9fdc54: Built at 2026-07-27T10:38:59Z",
     "2.1.277-1-f88a8f6: ﻿Fix Twitter/X profile URLs with harmless query params.",
