@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.280-1-ee24d6d",
-  "currentHash": "5d78878b7c36f3510808c5323a796fd05a19538c38954111d9b8ff999be5835b",
+  "latestVersion": "2.1.281-1-ae8e6f9",
+  "currentHash": "4b845cbf34ffd00ae70dec6ec6c4ab2e5fdf34bb642abe41e3be1af40281ac89",
   "changeList": [
+    "2.1.281-1-ae8e6f9: Fix Facebook CDN 403s by preserving signed photo URLs.",
+    "2.1.281-1-ae8e6f9: Built at 2026-07-27T11:17:45Z",
     "2.1.280-1-ee24d6d: Cap Facebook photo pagination by maxdownloads and fix CDN 403s.",
     "2.1.280-1-ee24d6d: Built at 2026-07-27T11:01:39Z",
     "2.1.279-1-0c63151: Fix Facebook photo downloads serving grid thumbnails instead of full images.",
