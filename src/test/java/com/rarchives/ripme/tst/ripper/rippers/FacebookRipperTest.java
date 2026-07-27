@@ -4,10 +4,13 @@ import com.rarchives.ripme.ripper.rippers.FacebookRipper;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
@@ -43,6 +46,68 @@ public class FacebookRipperTest {
         assertEquals("example",
                 new TestableFacebookRipper(new URL("https://www.facebook.com/example")).getGID(
                         new URL("https://www.facebook.com/example")));
+    }
+
+    @Test
+    public void testPhotoDiscoveryCountsDownloadsFromHistory(@TempDir Path tempDir) throws Exception {
+        Path configDir = tempDir.resolve("config");
+        Files.createDirectories(configDir);
+        String history = "["
+                + "{\"url\":\"https://www.facebook.com/example/photos\",\"count\":111},"
+                + "{\"url\":\"https://www.facebook.com/example/photos_by\",\"count\":86}"
+                + "]";
+        Files.writeString(configDir.resolve("history.json"), history, StandardCharsets.UTF_8);
+
+        CountingFacebookRipper ripper = new CountingFacebookRipper(
+                new URL("https://www.facebook.com/example/photos"), configDir);
+        assertEquals(197, ripper.countExistingImageFiles(),
+                "Discovery budget should sum history across all photo tabs for the profile");
+    }
+
+    private static class CountingFacebookRipper extends TestableFacebookRipper {
+        private final Path configDir;
+
+        CountingFacebookRipper(URL url, Path configDir) throws java.io.IOException {
+            super(url);
+            this.configDir = configDir;
+        }
+
+        @Override
+        protected boolean isPhotoListingPage() {
+            return true;
+        }
+
+        @Override
+        protected int countProfilePhotosFromHistory() {
+            Path historyFile = configDir.resolve("history.json");
+            if (!Files.isRegularFile(historyFile)) {
+                return 0;
+            }
+            String profileGid = getGID(this.url);
+            int total = 0;
+            try {
+                org.json.JSONArray entries = new org.json.JSONArray(
+                        Files.readString(historyFile, StandardCharsets.UTF_8));
+                for (int i = 0; i < entries.length(); i++) {
+                    org.json.JSONObject entry = entries.getJSONObject(i);
+                    String historyUrl = entry.optString("url", "");
+                    if (historyUrl.isBlank()) {
+                        continue;
+                    }
+                    if (!profileGid.equals(getGID(new URL(historyUrl)))) {
+                        continue;
+                    }
+                    total += entry.optInt("count", 0);
+                }
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+            return total;
+        }
+
+        int countExistingImageFiles() {
+            return super.countExistingImageFiles();
+        }
     }
 
     private static class TestableFacebookRipper extends FacebookRipper {

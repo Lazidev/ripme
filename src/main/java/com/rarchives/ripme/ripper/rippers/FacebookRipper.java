@@ -21,7 +21,9 @@ import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
@@ -32,6 +34,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 public class FacebookRipper extends AbstractHTMLRipper {
 
@@ -254,7 +259,7 @@ public class FacebookRipper extends AbstractHTMLRipper {
         if (budget < Integer.MAX_VALUE) {
             int maxDownloads = Utils.getConfigInteger("maxdownloads", -1);
             int existing = countExistingImageFiles();
-            logger.info("Facebook photo discovery budget: {} (maxdownloads={} + {} already on disk)",
+            logger.info("Facebook photo discovery budget: {} (maxdownloads={} + {} already downloaded)",
                     budget, maxDownloads, existing);
         }
 
@@ -1085,7 +1090,7 @@ public class FacebookRipper extends AbstractHTMLRipper {
 
     /**
      * When {@code maxdownloads} is set, only discover enough photos to fill remaining slots
-     * plus any images already saved in the album folder.
+     * plus any images already saved for this profile across photo-tab folders.
      */
     protected int getPhotoDiscoveryBudget() {
         if (cachedPhotoDiscoveryBudget != null) {
@@ -1100,29 +1105,45 @@ public class FacebookRipper extends AbstractHTMLRipper {
         return cachedPhotoDiscoveryBudget;
     }
 
-    private int countExistingImageFiles() {
-        int count = countImageFilesInDirectory(this.workingDir);
+    /**
+     * Counts images already acquired for this profile. Photo listing pages use RipMe history
+     * (not on-disk folders) because albums may have been moved or split across photo tabs.
+     */
+    protected int countExistingImageFiles() {
         if (isPhotoListingPage()) {
-            count += countLegacyPhotoTabFolders();
+            return countProfilePhotosFromHistory();
         }
-        return count;
+        return countImageFilesInDirectory(this.workingDir);
     }
 
-    private int countLegacyPhotoTabFolders() {
-        File dir = this.workingDir;
-        if (dir == null) {
+    protected int countProfilePhotosFromHistory() {
+        Path historyFile = Paths.get(Utils.getConfigDir(), "history.json");
+        if (!Files.isRegularFile(historyFile)) {
             return 0;
         }
-        File parent = dir.getParentFile();
-        if (parent == null) {
-            return 0;
+        String profileGid = getGID(this.url);
+        int total = 0;
+        try {
+            JSONArray entries = new JSONArray(Files.readString(historyFile, StandardCharsets.UTF_8));
+            for (int i = 0; i < entries.length(); i++) {
+                JSONObject entry = entries.getJSONObject(i);
+                String url = entry.optString("url", "");
+                if (url.isBlank()) {
+                    continue;
+                }
+                try {
+                    if (!profileGid.equals(getGID(new URL(url)))) {
+                        continue;
+                    }
+                } catch (MalformedURLException e) {
+                    continue;
+                }
+                total += entry.optInt("count", 0);
+            }
+        } catch (Exception e) {
+            logger.debug("Unable to sum profile photo history for discovery budget: {}", e.getMessage());
         }
-        String albumName = dir.getName();
-        if (!albumName.endsWith("_photos")) {
-            return 0;
-        }
-        return countImageFilesInDirectory(new File(parent, albumName + "_by"))
-                + countImageFilesInDirectory(new File(parent, albumName + "_of"));
+        return total;
     }
 
     private static int countImageFilesInDirectory(File dir) {
