@@ -19,6 +19,32 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class FacebookRipperTest {
 
+    @Test
+    public void testPhotoTabUrlsShareCommonAlbumFolder() throws Exception {
+        assertEquals("stephanie.bell.7121_photos",
+                new TestableFacebookRipper(new URL("https://www.facebook.com/stephanie.bell.7121/photos_by")).getGID(
+                        new URL("https://www.facebook.com/stephanie.bell.7121/photos_by")));
+        assertEquals("stephanie.bell.7121_photos",
+                new TestableFacebookRipper(new URL("https://www.facebook.com/stephanie.bell.7121/photos_of")).getGID(
+                        new URL("https://www.facebook.com/stephanie.bell.7121/photos_of")));
+        assertEquals("stephanie.bell.7121_photos",
+                new TestableFacebookRipper(new URL("https://www.facebook.com/stephanie.bell.7121/photos")).getGID(
+                        new URL("https://www.facebook.com/stephanie.bell.7121/photos")));
+        assertEquals("profile.php_photos",
+                new TestableFacebookRipper(new URL("https://www.facebook.com/profile.php?id=123&sk=photos")).getGID(
+                        new URL("https://www.facebook.com/profile.php?id=123&sk=photos")));
+    }
+
+    @Test
+    public void testNonPhotoUrlsKeepDistinctAlbumFolders() throws Exception {
+        assertEquals("example_posts_1",
+                new TestableFacebookRipper(new URL("https://www.facebook.com/example/posts/1")).getGID(
+                        new URL("https://www.facebook.com/example/posts/1")));
+        assertEquals("example",
+                new TestableFacebookRipper(new URL("https://www.facebook.com/example")).getGID(
+                        new URL("https://www.facebook.com/example")));
+    }
+
     private static class TestableFacebookRipper extends FacebookRipper {
         TestableFacebookRipper(URL url) throws java.io.IOException {
             super(url);

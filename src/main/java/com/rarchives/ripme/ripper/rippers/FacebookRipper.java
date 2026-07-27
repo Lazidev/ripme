@@ -144,9 +144,27 @@ public class FacebookRipper extends AbstractHTMLRipper {
         if (path == null || path.isBlank() || "/".equals(path)) {
             return "home";
         }
+        path = normalizePhotoListingPath(path, url.getQuery());
         String normalized = path.replaceAll("^/+", "").replaceAll("/+$", "");
         normalized = normalized.replaceAll("[^A-Za-z0-9._-]+", "_");
         return normalized.isBlank() ? "post" : normalized;
+    }
+
+    /**
+     * Photo tabs ({@code photos_of}, {@code photos_by}, etc.) share one download folder per profile,
+     * like Instagram reels and posts.
+     */
+    private static String normalizePhotoListingPath(String path, String query) {
+        String normalizedPath = path.replaceAll("/+$", "");
+        if (normalizedPath.matches("(?i).*/photos_(?:of|by|albums)$")) {
+            return normalizedPath.replaceFirst("(?i)/photos_(?:of|by|albums)$", "/photos");
+        }
+        if (normalizedPath.toLowerCase().endsWith("/profile.php")
+                && query != null
+                && query.toLowerCase().contains("sk=photos")) {
+            return normalizedPath + "/photos";
+        }
+        return normalizedPath;
     }
 
     @Override
@@ -1083,7 +1101,31 @@ public class FacebookRipper extends AbstractHTMLRipper {
     }
 
     private int countExistingImageFiles() {
+        int count = countImageFilesInDirectory(this.workingDir);
+        if (isPhotoListingPage()) {
+            count += countLegacyPhotoTabFolders();
+        }
+        return count;
+    }
+
+    private int countLegacyPhotoTabFolders() {
         File dir = this.workingDir;
+        if (dir == null) {
+            return 0;
+        }
+        File parent = dir.getParentFile();
+        if (parent == null) {
+            return 0;
+        }
+        String albumName = dir.getName();
+        if (!albumName.endsWith("_photos")) {
+            return 0;
+        }
+        return countImageFilesInDirectory(new File(parent, albumName + "_by"))
+                + countImageFilesInDirectory(new File(parent, albumName + "_of"));
+    }
+
+    private static int countImageFilesInDirectory(File dir) {
         if (dir == null || !dir.isDirectory()) {
             return 0;
         }
