@@ -323,47 +323,11 @@ public class InstagramRipper extends AbstractJSONRipper {
                     throw new IOException("Invalid JSON response - missing items/data objects");
                 }
 
-                // Convert feed API response to match GraphQL structure if needed
+                // Convert feed API response to match GraphQL structure if needed.
+                // Uses mediaToNode so carousel posts (media_type 8 / carousel_media) expand
+                // to GraphSidecar with every child image/video, not just the cover.
                 if (json.has("items")) {
-                    JSONObject graphqlStyle = new JSONObject();
-                    JSONObject data = new JSONObject();
-                    JSONObject user = new JSONObject();
-                    JSONObject timelineMedia = new JSONObject();
-                    JSONArray edges = new JSONArray();
-
-                    JSONArray items = json.getJSONArray("items");
-                    for (int i = 0; i < items.length(); i++) {
-                        JSONObject item = items.getJSONObject(i);
-                        JSONObject edge = new JSONObject();
-                        JSONObject node = new JSONObject();
-                        
-                        // Copy relevant fields
-                        node.put("__typename", item.has("video_versions") ? "GraphVideo" : "GraphImage");
-                        node.put("display_url", item.has("image_versions2") ? 
-                            item.getJSONObject("image_versions2").getJSONArray("candidates").getJSONObject(0).getString("url") : "");
-                        if (item.has("video_versions")) {
-                            node.put("video_url", item.getJSONArray("video_versions").getJSONObject(0).getString("url"));
-                        }
-                        
-                        edge.put("node", node);
-                        edges.put(edge);
-                    }
-
-                    timelineMedia.put("edges", edges);
-                    if (json.has("more_available")) {
-                        JSONObject pageInfo = new JSONObject();
-                        pageInfo.put("has_next_page", json.getBoolean("more_available"));
-                        if (json.has("next_max_id")) {
-                            pageInfo.put("end_cursor", json.getString("next_max_id"));
-                        }
-                        timelineMedia.put("page_info", pageInfo);
-                    }
-
-                    user.put("edge_owner_to_timeline_media", timelineMedia);
-                    data.put("user", user);
-                    graphqlStyle.put("data", data);
-                    
-                    return graphqlStyle;
+                    return convertFeedToTimeline(json);
                 }
 
                 return json;
@@ -452,6 +416,43 @@ public class InstagramRipper extends AbstractJSONRipper {
             logger.error("Error parsing clips response: " + e.getMessage());
             throw new IOException("Failed to parse Instagram clips response: " + e.getMessage());
         }
+    }
+
+    /**
+     * Reshapes a {@code /api/v1/feed/user/} response into the GraphQL timeline structure.
+     * Package-private for unit tests.
+     */
+    JSONObject convertFeedToTimeline(JSONObject feed) {
+        JSONArray items = feed.getJSONArray("items");
+        JSONArray edges = new JSONArray();
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject node = mediaToNode(items.getJSONObject(i));
+            if (node == null) {
+                continue;
+            }
+            JSONObject edge = new JSONObject();
+            edge.put("node", node);
+            edges.put(edge);
+        }
+
+        JSONObject timelineMedia = new JSONObject();
+        timelineMedia.put("edges", edges);
+        if (feed.has("more_available")) {
+            JSONObject pageInfo = new JSONObject();
+            pageInfo.put("has_next_page", feed.getBoolean("more_available"));
+            if (feed.has("next_max_id") && !feed.isNull("next_max_id")) {
+                pageInfo.put("end_cursor", feed.get("next_max_id").toString());
+            }
+            timelineMedia.put("page_info", pageInfo);
+        }
+
+        JSONObject user = new JSONObject();
+        user.put("edge_owner_to_timeline_media", timelineMedia);
+        JSONObject data = new JSONObject();
+        data.put("user", user);
+        JSONObject graphqlStyle = new JSONObject();
+        graphqlStyle.put("data", data);
+        return graphqlStyle;
     }
 
     /** Reshapes a {@code /clips/user/} response into the GraphQL timeline structure. */
