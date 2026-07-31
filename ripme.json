@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.283-1-1947b2d",
-  "currentHash": "24517df92b891d7f74ce8b82559dc14756ed11e1c6a860915f62f85b9e4e7a2e",
+  "latestVersion": "2.1.284-1-3d8387c",
+  "currentHash": "04fadde192b53256c0b23d61bef2a95ae9f2dd450b7e0dfaea2d3b527ce833f5",
   "changeList": [
+    "2.1.284-1-3d8387c: Fix Instagram profile rips missing carousel slides.",
+    "2.1.284-1-3d8387c: Built at 2026-07-31T10:24:53Z",
     "2.1.283-1-1947b2d: Base Facebook photo discovery budget on rip history.",
     "2.1.283-1-1947b2d: Built at 2026-07-27T12:29:29Z",
     "2.1.282-1-d9f857f: Unify Facebook photo tab folders per profile.",
