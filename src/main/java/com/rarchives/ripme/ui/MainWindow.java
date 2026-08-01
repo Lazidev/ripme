@@ -2726,8 +2726,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
                 String ripUrl = normalizeQueueUrl(ripper.getURL().toExternalForm());
                 if (!HISTORY.containsURL(ripUrl)) {
-                    // Show the row immediately with 0/0; it is removed on completion if
-                    // nothing was downloaded and it had no prior successful downloads.
+                    // Show the row immediately with 0/0 so empty rips still appear in history.
                     HistoryEntry entry = new HistoryEntry();
                     entry.url = ripUrl;
                     entry.dir = ripper.getWorkingDir().getAbsolutePath();
@@ -3116,7 +3115,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             if (looksLikeRateLimit(msg.getObject())) {
                 reduceDomainConcurrencyOnRateLimit();
             }
-            removeEmptyHistoryEntry(evt.ripper);
+            finalizeEmptyHistoryEntry(evt.ripper);
             statusProgress.setValue(0);
             statusProgress.setVisible(false);
             openButton.setVisible(false);
@@ -3150,22 +3149,17 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             HistoryEntry entry;
             if (HISTORY.containsURL(url)) {
                 entry = HISTORY.getEntryByURL(url);
-                String entryDir = (entry.dir != null && !entry.dir.isEmpty()) ? entry.dir : rsc.getDir();
-                if (rsc.count == 0 && entry.count == 0 && !hasDownloadedFiles(entryDir)) {
-                    // Nothing new, no prior recorded downloads, and no files on disk: drop the empty row.
-                    HISTORY.remove(entry);
-                } else {
-                    entry.latestCount = rsc.count;
-                    entry.count += rsc.count;
-                    entry.timesDownloaded += 1;
-                    entry.skipped = false;
-                    entry.modifiedDate = new Date();
-                    HISTORY.moveToBottom(entry);
-                    if (entry.dir == null || entry.dir.isEmpty()) {
-                        entry.dir = rsc.getDir();
-                    }
+                // Keep empty rips in history as 0/0 so failed or no-op runs remain visible.
+                entry.latestCount = rsc.count;
+                entry.count += rsc.count;
+                entry.timesDownloaded += 1;
+                entry.skipped = false;
+                entry.modifiedDate = new Date();
+                HISTORY.moveToBottom(entry);
+                if (entry.dir == null || entry.dir.isEmpty()) {
+                    entry.dir = rsc.getDir();
                 }
-            } else if (rsc.count > 0) {
+            } else {
                 entry = new HistoryEntry();
                 entry.url = url;
                 entry.dir = rsc.getDir();
@@ -3259,7 +3253,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             if (LOGGER.isEnabled(Level.ERROR)) {
                 appendLog((String) msg.getObject(), Color.RED);
             }
-            removeEmptyHistoryEntry(evt.ripper);
+            finalizeEmptyHistoryEntry(evt.ripper);
             statusProgress.setValue(0);
             statusProgress.setVisible(false);
             openButton.setVisible(false);
@@ -3270,47 +3264,37 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         }
     }
 
-    private void removeEmptyHistoryEntry(AbstractRipper ripper) {
+    /**
+     * Keeps a history row for a rip that ended with nothing downloaded (0/0).
+     */
+    private void finalizeEmptyHistoryEntry(AbstractRipper ripper) {
         String url = normalizeQueueUrl(ripper.getURL().toExternalForm());
-        if (!HISTORY.containsURL(url)) {
-            return;
+        HistoryEntry entry;
+        if (HISTORY.containsURL(url)) {
+            entry = HISTORY.getEntryByURL(url);
+            entry.latestCount = 0;
+            entry.timesDownloaded += 1;
+            entry.skipped = false;
+            entry.modifiedDate = new Date();
+            if (entry.dir == null || entry.dir.isEmpty()) {
+                entry.dir = ripper.getWorkingDir().getAbsolutePath();
+            }
+            HISTORY.moveToBottom(entry);
+        } else {
+            entry = new HistoryEntry();
+            entry.url = url;
+            entry.dir = ripper.getWorkingDir().getAbsolutePath();
+            entry.latestCount = 0;
+            entry.count = 0;
+            entry.timesDownloaded = 1;
+            entry.skipped = false;
+            entry.startDate = new Date();
+            entry.modifiedDate = new Date();
+            HISTORY.add(entry);
         }
-        HistoryEntry entry = HISTORY.getEntryByURL(url);
-        if (entry.count > 0) {
-            return;
-        }
-        String dir = (entry.dir != null && !entry.dir.isEmpty())
-                ? entry.dir
-                : ripper.getWorkingDir().getAbsolutePath();
-        if (hasDownloadedFiles(dir)) {
-            // Keep entries whose album folder still holds previously downloaded files.
-            return;
-        }
-        HISTORY.remove(entry);
         historyTableModel.fireTableDataChanged();
         applyHistoryFilter();
         saveHistory();
-    }
-
-    /**
-     * @return {@code true} when {@code dir} exists and contains at least one downloaded file
-     *         (ignoring the {@code urls.txt} produced by urls-only rips).
-     */
-    private boolean hasDownloadedFiles(String dir) {
-        if (dir == null || dir.isEmpty()) {
-            return false;
-        }
-        Path folder = Paths.get(dir);
-        if (!Files.isDirectory(folder)) {
-            return false;
-        }
-        try (Stream<Path> stream = Files.walk(folder)) {
-            return stream.anyMatch(path -> Files.isRegularFile(path)
-                    && !path.getFileName().toString().equalsIgnoreCase("urls.txt"));
-        } catch (IOException e) {
-            LOGGER.warn("Could not inspect album directory {}: {}", dir, e.getMessage());
-            return false;
-        }
     }
 
     public void update(AbstractRipper ripper, RipStatusMessage message) {
