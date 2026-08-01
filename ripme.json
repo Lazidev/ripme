@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.293-1-238a3aa",
-  "currentHash": "adbf5c81779088b895bdbb71a954e602b5b0e64afdc33ac217863b51b9c77c6f",
+  "latestVersion": "2.1.294-1-5ba6cb8",
+  "currentHash": "c17ec94c3da51068fea07bd9533b0ca21932863a54cff0946550da8678e9260b",
   "changeList": [
+    "2.1.294-1-5ba6cb8: Keep failed rips in history with a Failed status column.",
+    "2.1.294-1-5ba6cb8: Built at 2026-08-01T23:24:47Z",
     "2.1.293-1-238a3aa: Fall back to GraphQL for Instagram first page when feed is blocked.",
     "2.1.293-1-238a3aa: Built at 2026-08-01T23:14:58Z",
     "2.1.292-1-e052f10: Keep empty rips in history as 0/0 instead of removing them.",
