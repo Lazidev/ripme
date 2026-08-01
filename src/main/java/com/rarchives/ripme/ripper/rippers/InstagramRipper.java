@@ -248,7 +248,19 @@ public class InstagramRipper extends AbstractJSONRipper {
                 return feedPage;
             } catch (IOException e) {
                 lastFailure = e;
-                logger.warn("Feed API first page failed for {}: {}. Falling back to web_profile_info.",
+                logger.warn("Feed API first page failed for {}: {}. Trying GraphQL fallback.",
+                        username, e.getMessage());
+            }
+
+            // Same GraphQL path used for pagination — often still works when feed returns HTML
+            // and web_profile_info is bot-blocked with empty 429s.
+            try {
+                JSONObject graphqlPage = fetchGraphqlTimelinePage(username, null);
+                validateTimelineResponse(graphqlPage, username);
+                return graphqlPage;
+            } catch (IOException e) {
+                lastFailure = e;
+                logger.warn("GraphQL first page failed for {}: {}. Falling back to web_profile_info.",
                         username, e.getMessage());
             }
         }
@@ -262,7 +274,16 @@ public class InstagramRipper extends AbstractJSONRipper {
             logger.warn("web_profile_info first page failed for {}: {}", username, e.getMessage());
         }
 
+        // Anonymous / last-resort GraphQL (logged-out doc_id) when web_profile_info is blocked.
         if (!hasCookie("sessionid")) {
+            try {
+                JSONObject graphqlPage = fetchGraphqlTimelinePage(username, null);
+                validateTimelineResponse(graphqlPage, username);
+                return graphqlPage;
+            } catch (IOException e) {
+                lastFailure = e;
+                logger.warn("GraphQL first page failed for {}: {}", username, e.getMessage());
+            }
             throw loginRequiredException(
                     "Could not load Instagram profile '" + username + "'. "
                             + "Log into Instagram in Firefox (so a sessionid cookie exists), "
@@ -357,11 +378,6 @@ public class InstagramRipper extends AbstractJSONRipper {
             throw new IOException("Instagram API error: " + json.optString("message"));
         }
         throw new IOException("Invalid feed JSON response - missing items/data objects");
-    }
-
-    /** Kept for callers/tests that still use the old name; delegates to {@link #getFeedUserPage}. */
-    private JSONObject getGraphQLUserPage(String username, String endCursor) throws IOException {
-        return getFeedUserPage(username, endCursor);
     }
 
     /**
