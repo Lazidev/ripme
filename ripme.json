@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.291-1-b45ec84",
-  "currentHash": "27cf03de3231d5801f15e5a163ad2a69d4eb9523069fae36ea46f593d5f59a2d",
+  "latestVersion": "2.1.292-1-e052f10",
+  "currentHash": "d7461f7498c8c86bc6d33bb8143fa8d804cf0a9df623ac0d3bd74040a9f0abfe",
   "changeList": [
+    "2.1.292-1-e052f10: Keep empty rips in history as 0/0 instead of removing them.",
+    "2.1.292-1-e052f10: Built at 2026-08-01T23:09:31Z",
     "2.1.291-1-b45ec84: Fix Instagram media fetch when GraphQL returns HTML despite valid cookies.",
     "2.1.291-1-b45ec84: Built at 2026-08-01T22:51:22Z",
     "2.1.290-1-2d72adf: Add per-queue Force and Max overrides for skip and download limits.",
