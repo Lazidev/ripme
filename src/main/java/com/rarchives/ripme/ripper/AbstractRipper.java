@@ -962,15 +962,28 @@ public abstract class AbstractRipper
         } catch (HttpStatusException e) {
             logger.error("Got exception while running ripper:", e);
             trackHttpStatusCode(e.getStatusCode());
-            waitForThreads();
-            sendUpdate(STATUS.RIP_ERRORED, "HTTP status code " + e.getStatusCode() + " for URL " + e.getUrl());
+            failRipWithoutMarkingComplete(
+                    "HTTP status code " + e.getStatusCode() + " for URL " + e.getUrl());
         } catch (Exception e) {
             logger.error("Got exception while running ripper:", e);
-            waitForThreads();
-            sendUpdate(STATUS.RIP_ERRORED, e.getMessage());
+            failRipWithoutMarkingComplete(e.getMessage());
         } finally {
             cleanup();
         }
+    }
+
+    /**
+     * Waits for in-flight downloads after a fatal rip error without emitting
+     * {@link STATUS#RIP_COMPLETE}. Calling {@link #waitForThreads()} here used to
+     * report "Rip complete" even when {@link #rip()} failed before any media was queued.
+     */
+    private void failRipWithoutMarkingComplete(String message) {
+        if (threadPool != null) {
+            threadPool.waitForThreads();
+        }
+        // Suppress late checkIfComplete() callbacks from finishing download threads.
+        completed = true;
+        sendUpdate(STATUS.RIP_ERRORED, message != null ? message : "Unknown error");
     }
 
     /**
