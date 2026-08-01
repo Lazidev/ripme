@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.292-1-e052f10",
-  "currentHash": "d7461f7498c8c86bc6d33bb8143fa8d804cf0a9df623ac0d3bd74040a9f0abfe",
+  "latestVersion": "2.1.293-1-238a3aa",
+  "currentHash": "adbf5c81779088b895bdbb71a954e602b5b0e64afdc33ac217863b51b9c77c6f",
   "changeList": [
+    "2.1.293-1-238a3aa: Fall back to GraphQL for Instagram first page when feed is blocked.",
+    "2.1.293-1-238a3aa: Built at 2026-08-01T23:14:58Z",
     "2.1.292-1-e052f10: Keep empty rips in history as 0/0 instead of removing them.",
     "2.1.292-1-e052f10: Built at 2026-08-01T23:09:31Z",
     "2.1.291-1-b45ec84: Fix Instagram media fetch when GraphQL returns HTML despite valid cookies.",
