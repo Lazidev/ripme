@@ -90,6 +90,7 @@ public abstract class AbstractRipper
     private final ConsecutiveHttpFailureTracker httpFailureTracker =
             new ConsecutiveHttpFailureTracker(httpFailureThreshold);
     private final AtomicBoolean circuitBroken = new AtomicBoolean(false);
+    private final AtomicBoolean rateLimitNotified = new AtomicBoolean(false);
 
     private final Set<String> knownHashes = Collections.synchronizedSet(new HashSet<>());
     private volatile boolean hashHistoryLoaded = false;
@@ -149,9 +150,25 @@ public abstract class AbstractRipper
     }
 
     protected void trackHttpStatusCode(int statusCode) {
+        if (statusCode == 429) {
+            notifyRateLimited("HTTP status code 429");
+        }
         if (httpFailureTracker.recordHttpStatusCode(statusCode)) {
             tripCircuitBreaker("HTTP status code " + statusCode);
         }
+    }
+
+    /**
+     * Notifies the UI that this ripper hit a rate limit (HTTP 429 / site throttle).
+     * Only fires once per rip so the UI can drop per-domain concurrency.
+     */
+    public void notifyRateLimited(String detail) {
+        if (!rateLimitNotified.compareAndSet(false, true)) {
+            return;
+        }
+        String message = detail == null || detail.isEmpty() ? "Rate limited" : detail;
+        logger.warn(message);
+        sendUpdate(STATUS.RATE_LIMITED, message);
     }
 
     protected void trackHttpDownloadSuccess() {

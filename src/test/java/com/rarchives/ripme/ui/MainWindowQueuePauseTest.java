@@ -18,7 +18,7 @@ public class MainWindowQueuePauseTest {
 
         DefaultListModel<Object> queue = MainWindow.getQueueListModel();
         queue.clear();
-        mainWindow.getActiveDomains().clear();
+        mainWindow.getActiveDomainCounts().clear();
 
         AtomicInteger startedCount = new AtomicInteger(0);
         mainWindow.setRipperLauncher((url, domain) -> startedCount.incrementAndGet());

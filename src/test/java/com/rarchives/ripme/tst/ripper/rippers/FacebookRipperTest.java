@@ -105,7 +105,8 @@ public class FacebookRipperTest {
             return total;
         }
 
-        int countExistingImageFiles() {
+        @Override
+        protected int countExistingImageFiles() {
             return super.countExistingImageFiles();
         }
     }

@@ -385,7 +385,7 @@ public class FacebookRipper extends AbstractHTMLRipper {
      * @return true when the URL being ripped is a photo/album listing (e.g. {@code /name/photos} or
      *         a {@code /media/set/} album) rather than a single photo/video/reel permalink.
      */
-    private boolean isPhotoListingPage() {
+    protected boolean isPhotoListingPage() {
         String full = this.url.toExternalForm().toLowerCase();
         String path = this.url.getPath() == null ? "" : this.url.getPath().toLowerCase();
         // Single-media permalinks already expose the full image/video directly, so don't crawl them.

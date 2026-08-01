@@ -689,6 +689,10 @@ public class InstagramRipper extends AbstractJSONRipper {
                 boolean isRateLimit = e instanceof HttpStatusException && ((HttpStatusException) e).getStatusCode() == 429;
                 long waitMillis = WAIT_TIME * (1L << (attempt - 1));
 
+                if (isRateLimit) {
+                    notifyRateLimited("Instagram HTTP 429 while " + actionDescription);
+                }
+
                 if (attempt < MAX_RATE_LIMIT_RETRIES && (isRateLimit || !(e instanceof HttpStatusException))) {
                     if (isRateLimit) {
                         logger.warn("Instagram returned 429 while {} (attempt {}/{}). Waiting {} ms before retry. "

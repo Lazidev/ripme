@@ -123,6 +123,7 @@ class DownloadVideoThread implements Runnable {
                 huc.connect();
                 int statusCode = huc.getResponseCode();
                 if (statusCode == 429) {
+                    observer.notifyRateLimited("HTTP 429 Too Many Requests for " + url);
                     String retryAfterHeader = huc.getHeaderField("Retry-After");
                     int waitTimeSeconds = 5;
                     if (retryAfterHeader != null) {

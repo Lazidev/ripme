@@ -202,6 +202,7 @@ class DownloadFileThread implements Runnable {
                 }
                 if (statusCode == 429) { // Too Many Requests
                     logger.warn("[!] Received 429 Too Many Requests for " + url);
+                    observer.notifyRateLimited("HTTP 429 Too Many Requests for " + url);
                     String retryAfterHeader = huc.getHeaderField("Retry-After");
                     int waitTimeSeconds = 5; // Default wait time
 

@@ -34,6 +34,7 @@ import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.stream.Stream;
 
@@ -82,7 +83,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             "window.position", "remember.url_history", "skip.already_downloaded", "ssl.verify.off", "lang", "log.level",
             "rips.directory",
             "page.timeout", "download.max_size", "maxdownloads", "error.skip404",
-            "errors.consecutive_http.failures",
+            "errors.consecutive_http.failures", "queue.max_per_domain",
             "reddit.rip_by_upvote", "reddit.min_upvotes", "reddit.max_upvotes", "reddit.use_sub_dirs",
             "facebook.photos_doc_id", "facebook.photos_query_name", "facebook.photos_page_size",
             "facebook.max_listing_pages", "facebook.max_photo_pages", "facebook.photo_page_delay_ms",
@@ -106,7 +107,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
      */
     private final Set<AbstractRipper> finishedRippers =
             Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
-    private final Set<String> activeDomains = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    /** Count of in-flight album rips keyed by hostname (lowercased). */
+    private final ConcurrentHashMap<String, AtomicInteger> activeDomainCounts = new ConcurrentHashMap<>();
     private final ExecutorService ripExecutor = Executors.newCachedThreadPool();
     private BiConsumer<String, String> ripperLauncher = this::launchRipper;
 
@@ -165,7 +167,6 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     private static JLabel configUpdateLabel;
     private static JTextField configTimeoutText;
     private static JTextField configThreadsText;
-    private static JCheckBox configOverwriteCheckbox;
     private static JLabel configSaveDirLabel;
     private static JButton configSaveDirButton;
     private static JTextField configRetriesText;
@@ -186,8 +187,6 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     private static JCheckBox configClipboardAutorip;
     private static JCheckBox configSaveDescriptions;
     private static JCheckBox configPreferMp4;
-    private static JCheckBox configCoomerDownloadVideos;
-    private static JCheckBox configCoomerEnabled;
     private static JCheckBox configWindowPosition;
     private static JComboBox<String> configSelectLangComboBox;
     private static JLabel configThreadsLabel;
@@ -196,6 +195,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     private static JLabel configRetrySleepLabel;
     // This doesn't really belong here but I have no idea where else to put it
     private static JButton configUrlFileChooserButton;
+    private static JTextField configMaxPerDomainText;
 
     private static TrayIcon trayIcon;
     private static MenuItem trayMenuMain;
@@ -723,7 +723,6 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     }
 
     private void shutdownCleanup() {
-        Utils.setConfigBoolean("file.overwrite", configOverwriteCheckbox.isSelected());
         Utils.setConfigInteger("threads.size", Integer.parseInt(configThreadsText.getText()));
         Utils.setConfigInteger("download.retries", Integer.parseInt(configRetriesText.getText()));
         Utils.setConfigInteger("download.timeout", Integer.parseInt(configTimeoutText.getText()));
@@ -739,11 +738,19 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         Utils.setConfigBoolean("clipboard.autorip", configClipboardAutorip.isSelected());
         Utils.setConfigBoolean("descriptions.save", configSaveDescriptions.isSelected());
         Utils.setConfigBoolean("prefer.mp4", configPreferMp4.isSelected());
-        Utils.setConfigBoolean("coomer.enabled", configCoomerEnabled.isSelected());
-        Utils.setConfigBoolean("coomer.download.videos", configCoomerDownloadVideos.isSelected());
         Utils.setConfigBoolean("remember.url_history", configURLHistoryCheckbox.isSelected());
         Utils.setConfigBoolean("ssl.verify.off", configSSLVerifyOff.isSelected());
         Utils.setConfigString("lang", configSelectLangComboBox.getSelectedItem().toString());
+        if (configMaxPerDomainText != null) {
+            try {
+                int maxPerDomain = Integer.parseInt(configMaxPerDomainText.getText().trim());
+                if (maxPerDomain > 0) {
+                    Utils.setConfigInteger("queue.max_per_domain", maxPerDomain);
+                }
+            } catch (NumberFormatException ignored) {
+                // Keep the last valid value already stored in config.
+            }
+        }
         saveWindowPosition(mainFrame);
         // Persist any currently paused rippers so user can resume after re-launch
         activeRippers.keySet().stream().filter(AbstractRipper::isPaused).forEach(r -> addPausedUrl(r.getURL().toExternalForm()));
@@ -1228,8 +1235,6 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         configRetriesText = configField("download.retries", 3);
         configRetrySleepText = configField("download.retry.sleep", 5000);
 
-        configOverwriteCheckbox = addNewCheckbox(Utils.getLocalizedString("overwrite.existing.files"), "file.overwrite",
-                false);
         configAutoupdateCheckbox = addNewCheckbox(Utils.getLocalizedString("auto.update"), "auto.update", true);
         configPlaySound = addNewCheckbox(Utils.getLocalizedString("sound.when.rip.completes"), "play.sound", false);
         configShowPopup = addNewCheckbox(Utils.getLocalizedString("notification.when.rip.starts"),
@@ -1245,9 +1250,6 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         configSaveDescriptions = addNewCheckbox(Utils.getLocalizedString("save.descriptions"), "descriptions.save",
                 true);
         configPreferMp4 = addNewCheckbox(Utils.getLocalizedString("prefer.mp4.over.gif"), "prefer.mp4", false);
-        configCoomerEnabled = addNewCheckbox(Utils.getLocalizedString("coomer.enabled"), "coomer.enabled", false);
-        configCoomerDownloadVideos = addNewCheckbox(Utils.getLocalizedString("coomer.download.videos"),
-                "coomer.download.videos", true);
         configWindowPosition = addNewCheckbox(Utils.getLocalizedString("restore.window.position"), "window.position",
                 true);
         configURLHistoryCheckbox = addNewCheckbox(Utils.getLocalizedString("remember.url.history"),
@@ -1288,14 +1290,12 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         addItemToConfigGridBagConstraints(configGbc, idx++, configTimeoutLabel, configTimeoutText);
         addItemToConfigGridBagConstraints(configGbc, idx++, configRetriesLabel, configRetriesText);
         addItemToConfigGridBagConstraints(configGbc, idx++, configRetrySleepLabel, configRetrySleepText);
-        addItemToConfigGridBagConstraints(configGbc, idx++, configOverwriteCheckbox, configSaveOrderCheckbox);
-        addItemToConfigGridBagConstraints(configGbc, idx++, configPlaySound, configSaveLogs);
-        addItemToConfigGridBagConstraints(configGbc, idx++, configShowPopup, configSaveURLsOnly);
-        addItemToConfigGridBagConstraints(configGbc, idx++, configClipboardAutorip, configSaveAlbumTitles);
-        addItemToConfigGridBagConstraints(configGbc, idx++, configSaveDescriptions, configPreferMp4);
-        addItemToConfigGridBagConstraints(configGbc, idx++, configWindowPosition, configURLHistoryCheckbox);
-        addItemToConfigGridBagConstraints(configGbc, idx++, configCoomerEnabled, configCoomerDownloadVideos);
-        addItemToConfigGridBagConstraints(configGbc, idx++, configSSLVerifyOff);
+        addItemToConfigGridBagConstraints(configGbc, idx++, configSaveOrderCheckbox, configPlaySound);
+        addItemToConfigGridBagConstraints(configGbc, idx++, configSaveLogs, configShowPopup);
+        addItemToConfigGridBagConstraints(configGbc, idx++, configSaveURLsOnly, configClipboardAutorip);
+        addItemToConfigGridBagConstraints(configGbc, idx++, configSaveAlbumTitles, configSaveDescriptions);
+        addItemToConfigGridBagConstraints(configGbc, idx++, configPreferMp4, configWindowPosition);
+        addItemToConfigGridBagConstraints(configGbc, idx++, configURLHistoryCheckbox, configSSLVerifyOff);
         addItemToConfigGridBagConstraints(configGbc, idx++, configSelectLangComboBox, configUrlFileChooserButton);
         addItemToConfigGridBagConstraints(configGbc, idx++, configSaveDirLabel, configSaveDirButton);
         configGbc.gridx = 0;
@@ -1443,8 +1443,11 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         row = addConfigLabelFieldRow(panel, gbc, row, "page.timeout", configField("page.timeout", 5000));
         row = addConfigLabelFieldRow(panel, gbc, row, "download.max_size", configLongField("download.max_size", 104857600L));
         row = addConfigLabelFieldRow(panel, gbc, row, "maxdownloads", configField("maxdownloads", 250));
+        configMaxPerDomainText = configField("queue.max_per_domain", 1);
+        row = addConfigLabelFieldRow(panel, gbc, row, "queue.max_per_domain", configMaxPerDomainText);
         row = addConfigCheckBoxPairRow(panel, gbc, row, "error.skip404", false, "download.allow_duplicates", false);
-        row = addConfigCheckBoxPairRow(panel, gbc, row, "skip.already_downloaded", false, null, null);
+        row = addConfigCheckBoxPairRow(panel, gbc, row, "skip.already_downloaded", false, "file.overwrite", false);
+        row = addConfigCheckBoxPairRow(panel, gbc, row, "coomer.enabled", false, "coomer.download.videos", true);
         row = addConfigLabelFieldRow(panel, gbc, row, "errors.consecutive_http.failures",
                 configField("errors.consecutive_http.failures", 50));
         addConfigFiller(panel, gbc, row);
@@ -1689,7 +1692,6 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         configThreadsLabel.setText(Utils.getLocalizedString("max.download.threads"));
         configTimeoutLabel.setText(Utils.getLocalizedString("timeout.mill"));
         configRetriesLabel.setText(Utils.getLocalizedString("retry.download.count"));
-        configOverwriteCheckbox.setText(Utils.getLocalizedString("overwrite.existing.files"));
         configAutoupdateCheckbox.setText(Utils.getLocalizedString("auto.update"));
         configPlaySound.setText(Utils.getLocalizedString("sound.when.rip.completes"));
         configShowPopup.setText(Utils.getLocalizedString("notification.when.rip.starts"));
@@ -1702,8 +1704,6 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         configUrlFileChooserButton.setText(Utils.getLocalizedString("download.url.list"));
         configSaveDirButton.setText(Utils.getLocalizedString("select.save.dir") + "...");
         configPreferMp4.setText(Utils.getLocalizedString("prefer.mp4.over.gif"));
-        configCoomerEnabled.setText(Utils.getLocalizedString("coomer.enabled"));
-        configCoomerDownloadVideos.setText(Utils.getLocalizedString("coomer.download.videos"));
         configWindowPosition.setText(Utils.getLocalizedString("restore.window.position"));
         configURLHistoryCheckbox.setText(Utils.getLocalizedString("remember.url.history"));
         configSSLVerifyOff.setText(Utils.getLocalizedString("ssl.verify.off"));
@@ -2053,7 +2053,6 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         });
 
         addCheckboxListener(configSaveOrderCheckbox, "download.save_order");
-        addCheckboxListener(configOverwriteCheckbox, "file.overwrite");
         addCheckboxListener(configSaveLogs, "log.save");
         addCheckboxListener(configSaveURLsOnly, "urls_only.save");
         addCheckboxListener(configURLHistoryCheckbox, "remember.url_history");
@@ -2061,8 +2060,6 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         addCheckboxListener(configSaveAlbumTitles, "album_titles.save");
         addCheckboxListener(configSaveDescriptions, "descriptions.save");
         addCheckboxListener(configPreferMp4, "prefer.mp4");
-        addCheckboxListener(configCoomerEnabled, "coomer.enabled");
-        addCheckboxListener(configCoomerDownloadVideos, "coomer.download.videos");
         addCheckboxListener(configWindowPosition, "window.position");
 
         configClipboardAutorip.addActionListener(arg0 -> {
@@ -2340,15 +2337,16 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     synchronized void ripNextAlbum() {
         if (queuePaused) {
             LOGGER.debug("Queue is paused; no queued items will be started");
-            isRipping = !activeDomains.isEmpty();
+            isRipping = hasActiveDomains();
             return;
         }
 
         // Save current state of queue to configuration.
         Utils.setConfigList("queue", queueListModel.elements());
 
-        LOGGER.debug("Scanning queue ({} items) with active domains: {}", queueListModel.getSize(), activeDomains);
+        LOGGER.debug("Scanning queue ({} items) with active domains: {}", queueListModel.getSize(), activeDomainCounts);
 
+        int maxPerDomain = getMaxRipsPerDomain();
         boolean started;
         do {
             started = false;
@@ -2360,8 +2358,9 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                     updateQueue();
                     continue;
                 }
-                if (activeDomains.contains(domain)) {
-                    LOGGER.debug("Deferring queued rip for domain {} because another ripper is active", domain);
+                if (getActiveDomainCount(domain) >= maxPerDomain) {
+                    LOGGER.debug("Deferring queued rip for domain {} because {} rip(s) already active (max {})",
+                            domain, getActiveDomainCount(domain), maxPerDomain);
                     continue;
                 }
 
@@ -2374,7 +2373,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             }
         } while (started);
 
-        isRipping = !activeDomains.isEmpty() || !queueListModel.isEmpty();
+        isRipping = hasActiveDomains() || !queueListModel.isEmpty();
     }
 
     private void launchRipper(String urlString, String domain) {
@@ -2386,7 +2385,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
         stopButton.setEnabled(true);
         pauseButton.setEnabled(true);
-        activeDomains.add(domain);
+        acquireDomain(domain);
         activeRippers.put(ripperRun.ripper, new ActiveDownloadEntry(domain));
         refreshActivePanel();
 
@@ -2541,14 +2540,14 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             finishedRippers.add(ripper);
             activeRippers.remove(ripper);
         }
-        if (domain != null && activeDomains.remove(domain)) {
-            LOGGER.debug("Completed ripper for domain {}. Remaining active domains: {}", domain, activeDomains);
+        if (domain != null && releaseDomain(domain)) {
+            LOGGER.debug("Completed ripper for domain {}. Remaining active domains: {}", domain, activeDomainCounts);
         }
 
         refreshActivePanel();
 
         SwingUtilities.invokeLater(() -> {
-            if (activeDomains.isEmpty()) {
+            if (!hasActiveDomains()) {
                 stopButton.setEnabled(false);
                 pauseButton.setEnabled(false);
                 statusProgress.setValue(0);
@@ -2565,8 +2564,76 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         }
     }
 
+    ConcurrentHashMap<String, AtomicInteger> getActiveDomainCounts() {
+        return activeDomainCounts;
+    }
+
+    /** @deprecated Prefer {@link #getActiveDomainCounts()}; kept for older tests. */
+    @Deprecated
     Set<String> getActiveDomains() {
-        return activeDomains;
+        return activeDomainCounts.keySet();
+    }
+
+    int getMaxRipsPerDomain() {
+        return Math.max(1, Utils.getConfigInteger("queue.max_per_domain", 1));
+    }
+
+    private int getActiveDomainCount(String domain) {
+        AtomicInteger count = activeDomainCounts.get(domain);
+        return count == null ? 0 : count.get();
+    }
+
+    private void acquireDomain(String domain) {
+        activeDomainCounts.computeIfAbsent(domain, ignored -> new AtomicInteger()).incrementAndGet();
+    }
+
+    /**
+     * @return {@code true} when a count was decremented for {@code domain}.
+     */
+    private boolean releaseDomain(String domain) {
+        AtomicInteger[] changed = { null };
+        activeDomainCounts.computeIfPresent(domain, (key, count) -> {
+            changed[0] = count;
+            int remaining = count.decrementAndGet();
+            return remaining <= 0 ? null : count;
+        });
+        return changed[0] != null;
+    }
+
+    private boolean hasActiveDomains() {
+        return !activeDomainCounts.isEmpty();
+    }
+
+    /**
+     * Drops concurrent same-domain rips to 1 after a rate-limit signal and refreshes the Downloads UI field.
+     */
+    private void reduceDomainConcurrencyOnRateLimit() {
+        int current = Utils.getConfigInteger("queue.max_per_domain", 1);
+        if (current <= 1) {
+            return;
+        }
+        Utils.setConfigInteger("queue.max_per_domain", 1);
+        Utils.saveConfig();
+        LOGGER.warn("Rate limited; queue.max_per_domain reduced from {} to 1", current);
+        Runnable updateUi = () -> {
+            if (configMaxPerDomainText != null && !"1".equals(configMaxPerDomainText.getText())) {
+                configMaxPerDomainText.setText("1");
+            }
+            statusWithColor(Utils.getLocalizedString("rate.limited.concurrency"), Color.ORANGE);
+        };
+        if (SwingUtilities.isEventDispatchThread()) {
+            updateUi.run();
+        } else {
+            SwingUtilities.invokeLater(updateUi);
+        }
+    }
+
+    private static boolean looksLikeRateLimit(Object message) {
+        if (message == null) {
+            return false;
+        }
+        String text = message.toString().toLowerCase(Locale.ROOT);
+        return text.contains("429") || text.contains("rate limit") || text.contains("too many requests");
     }
 
     boolean isQueuePaused() {
@@ -2723,11 +2790,17 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             if (LOGGER.isEnabled(Level.ERROR)) {
                 appendLog((String) msg.getObject(), Color.RED);
             }
+            if (looksLikeRateLimit(msg.getObject())) {
+                reduceDomainConcurrencyOnRateLimit();
+            }
             refreshActivePanel();
             break;
         case DOWNLOAD_WARN:
             if (LOGGER.isEnabled(Level.WARN)) {
                 appendLog((String) msg.getObject(), Color.ORANGE);
+            }
+            if (looksLikeRateLimit(msg.getObject())) {
+                reduceDomainConcurrencyOnRateLimit();
             }
             break;
         case DOWNLOAD_SKIP:
@@ -2740,6 +2813,9 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             if (LOGGER.isEnabled(Level.ERROR)) {
                 appendLog((String) msg.getObject(), Color.RED);
             }
+            if (looksLikeRateLimit(msg.getObject())) {
+                reduceDomainConcurrencyOnRateLimit();
+            }
             removeEmptyHistoryEntry(evt.ripper);
             statusProgress.setValue(0);
             statusProgress.setVisible(false);
@@ -2749,11 +2825,22 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             removeActiveRipperEntry(evt.ripper);
             break;
 
+        case RATE_LIMITED:
+            if (LOGGER.isEnabled(Level.WARN)) {
+                appendLog((String) msg.getObject(), Color.ORANGE);
+            }
+            reduceDomainConcurrencyOnRateLimit();
+            refreshActivePanel();
+            break;
+
         case RIP_CIRCUIT_BREAK:
             if (LOGGER.isEnabled(Level.WARN)) {
                 appendLog((String) msg.getObject(), Color.ORANGE);
             }
             statusWithColor((String) msg.getObject(), Color.ORANGE);
+            if (looksLikeRateLimit(msg.getObject())) {
+                reduceDomainConcurrencyOnRateLimit();
+            }
             refreshActivePanel();
             break;
 
