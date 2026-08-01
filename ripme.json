@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.287-1-6cfc136",
-  "currentHash": "06311eb3b8cd3be436841ca45a07912e814de451eb1a94cf1bc9046b7bcc05d2",
+  "latestVersion": "2.1.288-1-8b2704e",
+  "currentHash": "c3de2ef702bd0f4899f4333532b08d97f357fc141d7d06581b507a97427cfb65",
   "changeList": [
+    "2.1.288-1-8b2704e: Add Skipped and D# columns to the history table.",
+    "2.1.288-1-8b2704e: Built at 2026-08-01T12:16:51Z",
     "2.1.287-1-6cfc136: Fix per-domain concurrency overrun and stalled restored queues.",
     "2.1.287-1-6cfc136: Built at 2026-08-01T11:59:45Z",
     "2.1.286-1-41e6d61: Allow concurrent same-domain rips and auto-drop to 1 on rate limits.",
