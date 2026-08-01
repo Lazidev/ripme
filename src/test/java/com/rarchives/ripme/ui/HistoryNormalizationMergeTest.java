@@ -67,4 +67,22 @@ public class HistoryNormalizationMergeTest {
         assertFalse(history.removeIfNeverDownloaded(entry.url));
         assertEquals(1, history.toList().size());
     }
+
+    @Test
+    public void hasDownloadedRequiresSuccessfulCount() {
+        History history = new History();
+        HistoryEntry empty = new HistoryEntry();
+        empty.url = "https://example.com/empty";
+        empty.count = 0;
+        history.add(empty);
+
+        HistoryEntry downloaded = new HistoryEntry();
+        downloaded.url = "https://example.com/done";
+        downloaded.count = 2;
+        history.add(downloaded);
+
+        assertFalse(history.hasDownloaded("https://example.com/empty"));
+        assertFalse(history.hasDownloaded("https://example.com/missing"));
+        assertTrue(history.hasDownloaded("https://example.com/done"));
+    }
 }

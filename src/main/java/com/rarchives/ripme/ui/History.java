@@ -98,6 +98,14 @@ public class History {
         return false;
     }
 
+    /**
+     * @return {@code true} when this URL has recorded at least one successful download.
+     */
+    public boolean hasDownloaded(String url) {
+        HistoryEntry entry = findEntryByURL(url);
+        return entry != null && entry.count > 0;
+    }
+
     public HistoryEntry getEntryByURL(String url) {
         for (HistoryEntry entry : this.list) {
             if (entry.url.equals(url)) {

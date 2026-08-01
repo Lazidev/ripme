@@ -103,11 +103,30 @@ public class App {
      *
      */
     private static void rip(URL url) throws Exception {
+        rip(url, false);
+    }
+
+    /**
+     * Creates an abstract ripper and instructs it to rip.
+     * @param url URL to be ripped
+     * @param forceRip when {@code true}, ignore the skip-already-downloaded setting (used by re-rip)
+     * @throws Exception Nothing too specific here, just a catch-all.
+     */
+    private static void rip(URL url, boolean forceRip) throws Exception {
         AbstractRipper ripper = AbstractRipper.getRipper(url);
+        String u = MainWindow.normalizeQueueUrl(ripper.getURL().toExternalForm());
+        if (!forceRip && Utils.getConfigBoolean("skip.already_downloaded", false) && HISTORY.hasDownloaded(u)) {
+            logger.info("Skipping already downloaded URL: " + u);
+            HistoryEntry entry = HISTORY.getEntryByURL(u);
+            entry.latestCount = 0;
+            entry.modifiedDate = new Date();
+            HISTORY.moveToBottom(entry);
+            saveHistory();
+            return;
+        }
         ripper.setup();
         ripper.rip();
 
-        String u = ripper.getURL().toExternalForm();
         Date date = new Date();
         if (HISTORY.containsURL(u)) {
             HistoryEntry entry = HISTORY.getEntryByURL(u);
@@ -191,7 +210,7 @@ public class App {
             for (HistoryEntry entry : HISTORY.toList()) {
                 try {
                     URL url = new URI(entry.url).toURL();
-                     rip(url);
+                     rip(url, true);
                 } catch (Exception e) {
                     logger.error("[!] Failed to rip URL " + entry.url, e);
                     continue;
@@ -220,7 +239,7 @@ public class App {
                     added++;
                     try {
                         URL url = new URI(entry.url).toURL();
-                        rip(url);
+                        rip(url, true);
                     } catch (Exception e) {
                         logger.error("[!] Failed to rip URL " + entry.url, e);
                         continue;
@@ -258,6 +277,7 @@ public class App {
 
         //Read URLs from File
         if (cl.hasOption('f')) {
+            loadHistory();
             Path urlfile = Paths.get(cl.getOptionValue('f'));
 
             try (BufferedReader br = Files.newBufferedReader(urlfile)) {

@@ -79,7 +79,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             "auto.update", "play.sound", "download.show_popup", "download.save_order", "log.save",
             "urls_only.save", "album_titles.save", "clipboard.autorip", "descriptions.save", "prefer.mp4",
             "coomer.download.videos", "coomer.enabled",
-            "window.position", "remember.url_history", "ssl.verify.off", "lang", "log.level",
+            "window.position", "remember.url_history", "skip.already_downloaded", "ssl.verify.off", "lang", "log.level",
             "rips.directory",
             "page.timeout", "download.max_size", "maxdownloads", "error.skip404",
             "errors.consecutive_http.failures",
@@ -581,7 +581,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         queueListModel.addElement(normalized);
     }
 
-    static String normalizeQueueUrl(String rawUrl) {
+    public static String normalizeQueueUrl(String rawUrl) {
         if (rawUrl == null) {
             return null;
         }
@@ -1444,6 +1444,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         row = addConfigLabelFieldRow(panel, gbc, row, "download.max_size", configLongField("download.max_size", 104857600L));
         row = addConfigLabelFieldRow(panel, gbc, row, "maxdownloads", configField("maxdownloads", 250));
         row = addConfigCheckBoxPairRow(panel, gbc, row, "error.skip404", false, "download.allow_duplicates", false);
+        row = addConfigCheckBoxPairRow(panel, gbc, row, "skip.already_downloaded", false, null, null);
         row = addConfigLabelFieldRow(panel, gbc, row, "errors.consecutive_http.failures",
                 configField("errors.consecutive_http.failures", 50));
         addConfigFiller(panel, gbc, row);
@@ -2427,6 +2428,17 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         AbstractRipper ripper = null;
         try {
             ripper = AbstractRipper.getRipper(url);
+            String ripUrl = normalizeQueueUrl(ripper.getURL().toExternalForm());
+            if (Utils.getConfigBoolean("skip.already_downloaded", false) && HISTORY.hasDownloaded(ripUrl)) {
+                LOGGER.info("Skipping already downloaded URL: {}", ripUrl);
+                statusWithColor("Skipping already downloaded: " + ripUrl, Color.ORANGE);
+                recordSkippedRip(ripUrl);
+                stopButton.setEnabled(false);
+                pauseButton.setEnabled(false);
+                statusProgress.setValue(0);
+                pack();
+                return null;
+            }
             ripper.setup();
         } catch (Exception e) {
             failed = true;
@@ -2486,6 +2498,23 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         statusProgress.setValue(0);
         pack();
         return null;
+    }
+
+    /**
+     * Marks a previously downloaded URL as skipped: latest count 0, bumped to the
+     * bottom of history so recent skips are easy to spot.
+     */
+    private void recordSkippedRip(String ripUrl) {
+        if (!HISTORY.containsURL(ripUrl)) {
+            return;
+        }
+        HistoryEntry entry = HISTORY.getEntryByURL(ripUrl);
+        entry.latestCount = 0;
+        entry.modifiedDate = new Date();
+        HISTORY.moveToBottom(entry);
+        historyTableModel.fireTableDataChanged();
+        applyHistoryFilter();
+        saveHistory();
     }
 
     private String getDomainFromUrl(String urlString) {
