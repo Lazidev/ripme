@@ -107,6 +107,12 @@ public final class MainWindow implements Runnable, RipStatusHandler {
      */
     private final Set<AbstractRipper> finishedRippers =
             Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
+    /**
+     * Rippers whose per-domain concurrency slot has already been released.
+     * Prevents cancel + executor-finally from releasing the same slot twice.
+     */
+    private final Set<AbstractRipper> releasedDomainSlots =
+            Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
     /** Count of in-flight album rips keyed by hostname (lowercased). */
     private final ConcurrentHashMap<String, AtomicInteger> activeDomainCounts = new ConcurrentHashMap<>();
     private final ExecutorService ripExecutor = Executors.newCachedThreadPool();
@@ -385,7 +391,16 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                     resumeButton.addActionListener(e -> {
                         removePausedUrl(pausedUrl);
                         String domain = getDomainFromUrl(pausedUrl);
-                        if (domain != null) {
+                        if (domain == null) {
+                            refreshActivePanel();
+                            return;
+                        }
+                        if (getActiveDomainCount(domain) >= getMaxRipsPerDomain()) {
+                            // At capacity for this domain — put it back on the queue instead.
+                            addUrlToQueue(pausedUrl);
+                            statusWithColor("Domain at concurrent limit; queued " + pausedUrl, Color.ORANGE);
+                        } else {
+                            acquireDomain(domain);
                             ripperLauncher.accept(pausedUrl, domain);
                         }
                         refreshActivePanel();
@@ -685,6 +700,12 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         loadPausedDownloads();
         setupHandlers();
         refreshActivePanel();
+
+        // Queue is restored during createUI before the ListDataListener exists, so kick
+        // processing once handlers are ready.
+        if (!queueListModel.isEmpty()) {
+            ripNextAlbum();
+        }
 
         Thread shutdownThread = new Thread(this::shutdownCleanup);
         Runtime.getRuntime().addShutdownHook(shutdownThread);
@@ -1371,13 +1392,16 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
             private void checkAndUpdate() {
                 final var txt = field.getText();
+                if (txt == null || txt.isBlank()) {
+                    return;
+                }
                 try {
-                    final var newValue = Integer.parseInt(txt);
+                    final var newValue = Integer.parseInt(txt.trim());
                     if (newValue > 0) {
                         Utils.setConfigInteger(key, newValue);
                     }
                 } catch (final Exception e) {
-                    LOGGER.warn(e.getMessage());
+                    LOGGER.debug("Ignoring invalid integer for {}: {}", key, e.getMessage());
                 }
             }
         });
@@ -1405,13 +1429,16 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
             private void checkAndUpdate() {
                 final var txt = field.getText();
+                if (txt == null || txt.isBlank()) {
+                    return;
+                }
                 try {
-                    final var newValue = Long.parseLong(txt);
+                    final var newValue = Long.parseLong(txt.trim());
                     if (newValue > 0) {
                         Utils.setConfigLong(key, newValue);
                     }
                 } catch (final Exception e) {
-                    LOGGER.warn(e.getMessage());
+                    LOGGER.debug("Ignoring invalid long for {}: {}", key, e.getMessage());
                 }
             }
         });
@@ -2366,6 +2393,9 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
                 queueListModel.remove(i);
                 updateQueue();
+                // Reserve the domain slot before launchRipper/ripAlbum so re-entrant
+                // ripNextAlbum calls (or overlapping starts) cannot overrun max_per_domain.
+                acquireDomain(domain);
                 LOGGER.debug("Starting queued rip for domain {}: {}", domain, nextAlbum);
                 ripperLauncher.accept(nextAlbum, domain);
                 started = true;
@@ -2379,13 +2409,13 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     private void launchRipper(String urlString, String domain) {
         RipperRun ripperRun = ripAlbum(urlString);
         if (ripperRun == null) {
+            // Domain slot was reserved by ripNextAlbum (or resume); free it and continue the queue.
             onRipperFinished(domain, null);
             return;
         }
 
         stopButton.setEnabled(true);
         pauseButton.setEnabled(true);
-        acquireDomain(domain);
         activeRippers.put(ripperRun.ripper, new ActiveDownloadEntry(domain));
         refreshActivePanel();
 
@@ -2523,7 +2553,15 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 trimmed = "http://" + trimmed;
             }
             URL url = new URI(trimmed).toURL();
-            return url.getHost() == null ? null : url.getHost().toLowerCase(Locale.ROOT);
+            if (url.getHost() == null) {
+                return null;
+            }
+            String host = url.getHost().toLowerCase(Locale.ROOT);
+            // Treat www.example.com and example.com as the same concurrency bucket.
+            if (host.startsWith("www.")) {
+                host = host.substring(4);
+            }
+            return host;
         } catch (MalformedURLException | URISyntaxException e) {
             LOGGER.error("[!] Could not generate URL for '" + urlString + "'", e);
             error("Given URL is not valid, expecting http://website.com/page/...");
@@ -2533,12 +2571,13 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
     void onRipperFinished(String domain, AbstractRipper ripper) {
         if (ripper != null) {
-            removePausedUrl(ripper.getURL().toExternalForm());
-            // Guaranteed cleanup: the rip thread has returned, so this is the last chance to
-            // finalize rippers that ended via a path with no terminal status event (0 URLs,
-            // uncaught exception, or a stopped rip that was guarded out of handleEvent).
             finishedRippers.add(ripper);
+            removePausedUrl(ripper.getURL().toExternalForm());
             activeRippers.remove(ripper);
+            // cancel + executor finally (and status-driven UI removal) can overlap; release once.
+            if (!releasedDomainSlots.add(ripper)) {
+                return;
+            }
         }
         if (domain != null && releaseDomain(domain)) {
             LOGGER.debug("Completed ripper for domain {}. Remaining active domains: {}", domain, activeDomainCounts);
@@ -2723,9 +2762,11 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                     ripTextfield.setText("");
                 }
             } else if (url_not_empty) {
-                mainWindow.displayAndLogError("This URL is already in queue: " + url, Color.RED);
+                // Already queued (often restored from a previous session). Kick processing in case
+                // the queue was never started after startup restore.
                 mainWindow.statusWithColor("This URL is already in queue: " + url, Color.ORANGE);
                 ripTextfield.setText("");
+                mainWindow.ripNextAlbum();
             }
             else if(!mainWindow.isRipping){
                 mainWindow.ripNextAlbum();

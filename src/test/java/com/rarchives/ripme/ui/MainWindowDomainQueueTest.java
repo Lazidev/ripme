@@ -38,11 +38,9 @@ public class MainWindowDomainQueueTest {
         CountDownLatch startLatch = new CountDownLatch(3);
         CountDownLatch finishLatch = new CountDownLatch(3);
 
+        // Domain slots are reserved by ripNextAlbum before the launcher runs.
         mainWindow.setRipperLauncher((url, domain) -> {
             startedDomains.add(domain + ":" + url);
-            mainWindow.getActiveDomainCounts()
-                    .computeIfAbsent(domain, ignored -> new AtomicInteger())
-                    .incrementAndGet();
             startLatch.countDown();
 
             new Thread(() -> {
@@ -84,14 +82,16 @@ public class MainWindowDomainQueueTest {
         mainWindow.getActiveDomainCounts().clear();
 
         List<String> startedUrls = Collections.synchronizedList(new ArrayList<>());
+        AtomicInteger peakSameDomain = new AtomicInteger();
         CountDownLatch bothSameDomainStarted = new CountDownLatch(2);
         CountDownLatch finishLatch = new CountDownLatch(3);
 
         mainWindow.setRipperLauncher((url, domain) -> {
             startedUrls.add(url);
-            mainWindow.getActiveDomainCounts()
-                    .computeIfAbsent(domain, ignored -> new AtomicInteger())
-                    .incrementAndGet();
+            int inFlight = mainWindow.getActiveDomainCounts()
+                    .getOrDefault(domain, new AtomicInteger())
+                    .get();
+            peakSameDomain.accumulateAndGet(inFlight, Math::max);
             if ("example.com".equals(domain)) {
                 bothSameDomainStarted.countDown();
             }
@@ -120,7 +120,52 @@ public class MainWindowDomainQueueTest {
                 "Two same-domain rips should start concurrently when max_per_domain is 2");
         assertTrue(finishLatch.await(5, TimeUnit.SECONDS), "All rippers should have finished");
         assertEquals(3, startedUrls.size());
+        assertTrue(peakSameDomain.get() <= 2, "Should never exceed configured max per domain");
         assertTrue(mainWindow.getActiveDomainCounts().isEmpty());
         assertEquals(0, queue.getSize());
+    }
+
+    @Test
+    public void treatsWwwAndBareHostAsSameDomain() throws IOException, InterruptedException {
+        Utils.setConfigInteger("queue.max_per_domain", 1);
+        MainWindow mainWindow = new MainWindow(true);
+
+        DefaultListModel<Object> queue = MainWindow.getQueueListModel();
+        queue.clear();
+        mainWindow.getActiveDomainCounts().clear();
+
+        List<String> startedUrls = Collections.synchronizedList(new ArrayList<>());
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch finishLatch = new CountDownLatch(2);
+        AtomicInteger maxInFlight = new AtomicInteger();
+
+        mainWindow.setRipperLauncher((url, domain) -> {
+            startedUrls.add(url);
+            int inFlight = mainWindow.getActiveDomainCounts()
+                    .getOrDefault(domain, new AtomicInteger())
+                    .get();
+            maxInFlight.accumulateAndGet(inFlight, Math::max);
+            firstStarted.countDown();
+
+            new Thread(() -> {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                mainWindow.onRipperFinished(domain, null);
+                finishLatch.countDown();
+            }).start();
+        });
+
+        queue.addElement("http://www.example.com/first");
+        queue.addElement("http://example.com/second");
+
+        mainWindow.ripNextAlbum();
+
+        assertTrue(firstStarted.await(5, TimeUnit.SECONDS));
+        assertTrue(finishLatch.await(5, TimeUnit.SECONDS));
+        assertEquals(2, startedUrls.size());
+        assertEquals(1, maxInFlight.get(), "www and bare host must share the concurrency limit");
     }
 }
