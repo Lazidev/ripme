@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.285-1-661c71b",
-  "currentHash": "df29bd4db07a65ce4e90b71d76a58600fcc3f30d5b68e7d6f7ad02a635ac63f5",
+  "latestVersion": "2.1.286-1-41e6d61",
+  "currentHash": "515836ccbc7872b2bbb7b21d694ef174059026a84792c5c9116ccceb99724127",
   "changeList": [
+    "2.1.286-1-41e6d61: Allow concurrent same-domain rips and auto-drop to 1 on rate limits.",
+    "2.1.286-1-41e6d61: Built at 2026-08-01T11:36:52Z",
     "2.1.285-1-661c71b: Add option to skip album URLs already in download history.",
     "2.1.285-1-661c71b: Built at 2026-08-01T11:16:13Z",
     "2.1.284-1-3d8387c: Fix Instagram profile rips missing carousel slides.",
