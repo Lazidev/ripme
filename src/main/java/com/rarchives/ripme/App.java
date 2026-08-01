@@ -120,6 +120,7 @@ public class App {
             HistoryEntry entry = HISTORY.getEntryByURL(u);
             entry.latestCount = 0;
             entry.skipped = true;
+            entry.failed = false;
             entry.modifiedDate = new Date();
             HISTORY.moveToBottom(entry);
             saveHistory();
@@ -133,6 +134,7 @@ public class App {
             HistoryEntry entry = HISTORY.getEntryByURL(u);
             entry.modifiedDate = date;
             entry.skipped = false;
+            entry.failed = false;
             entry.timesDownloaded += 1;
         } else {
             HistoryEntry entry = new HistoryEntry();
@@ -140,6 +142,7 @@ public class App {
             entry.dir = ripper.getWorkingDir().getAbsolutePath();
             entry.timesDownloaded = 1;
             entry.skipped = false;
+            entry.failed = false;
             try {
                 entry.title = ripper.getAlbumTitle(ripper.getURL());
             } catch (MalformedURLException ignored) { }

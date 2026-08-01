@@ -15,7 +15,8 @@ public class HistoryEntry {
     public Date    startDate    = new Date(),
                    modifiedDate = new Date();
     public boolean selected     = false,
-                   skipped      = false;
+                   skipped      = false,
+                   failed       = false;
 
     public HistoryEntry() {
     }
@@ -45,6 +46,9 @@ public class HistoryEntry {
         if (json.has("skipped")) {
             this.skipped = json.getBoolean("skipped");
         }
+        if (json.has("failed")) {
+            this.failed = json.getBoolean("failed");
+        }
         return this;
     }
 
@@ -58,6 +62,7 @@ public class HistoryEntry {
         json.put("latestCount",  this.latestCount);
         json.put("timesDownloaded", this.timesDownloaded);
         json.put("skipped",      this.skipped);
+        json.put("failed",       this.failed);
         json.put("selected",     this.selected);
         if (this.dir != null && !this.dir.isEmpty()) {
             json.put("dir", this.dir);

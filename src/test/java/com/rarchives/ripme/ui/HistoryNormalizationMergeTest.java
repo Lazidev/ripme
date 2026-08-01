@@ -93,18 +93,42 @@ public class HistoryNormalizationMergeTest {
     }
 
     @Test
-    public void roundTripsSkippedAndTimesDownloaded() {
+    public void roundTripsSkippedFailedAndTimesDownloaded() {
         HistoryEntry entry = new HistoryEntry();
         entry.url = "https://example.com/album";
         entry.skipped = true;
+        entry.failed = true;
         entry.timesDownloaded = 4;
         entry.count = 12;
         entry.latestCount = 0;
 
         HistoryEntry restored = new HistoryEntry().fromJSON(entry.toJSON());
         assertTrue(restored.skipped);
+        assertTrue(restored.failed);
         assertEquals(4, restored.timesDownloaded);
         assertEquals(12, restored.count);
         assertEquals(0, restored.latestCount);
+    }
+
+    @Test
+    public void mergesPreferNewerFailedFlag() {
+        History history = new History();
+
+        HistoryEntry first = new HistoryEntry();
+        first.url = "https://example.com/post?id=1";
+        first.failed = false;
+        first.modifiedDate = new Date(1000);
+        history.add(first);
+
+        HistoryEntry second = new HistoryEntry();
+        second.url = "https://example.com/post?id=1&utm_source=x";
+        second.failed = true;
+        second.modifiedDate = new Date(2000);
+        history.add(second);
+
+        history.normalizeAndMergeUrls(MainWindow::normalizeQueueUrl);
+
+        assertEquals(1, history.toList().size());
+        assertTrue(history.toList().get(0).failed);
     }
 }

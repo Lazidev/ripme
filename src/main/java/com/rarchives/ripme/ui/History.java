@@ -26,6 +26,7 @@ public class History {
         "created",
         "modified",
         "Skipped",
+        "Failed",
         "D#",
         "latest",
         "#",
@@ -69,12 +70,14 @@ public class History {
         case 3:
             return entry.skipped ? 1 : 0;
         case 4:
-            return entry.timesDownloaded;
+            return entry.failed ? 1 : 0;
         case 5:
-            return entry.latestCount;
+            return entry.timesDownloaded;
         case 6:
-            return entry.count;
+            return entry.latestCount;
         case 7:
+            return entry.count;
+        case 8:
             return entry.selected;
         default:
             return null;
@@ -87,8 +90,9 @@ public class History {
         case 4:
         case 5:
         case 6:
-            return Integer.class;
         case 7:
+            return Integer.class;
+        case 8:
             return Boolean.class;
         default:
             return String.class;
@@ -97,7 +101,7 @@ public class History {
 
     /** Column index of the selectable checkbox. */
     public int getSelectedColumnIndex() {
-        return 7;
+        return 8;
     }
     private String dateToHumanReadable(Date date) {
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss");
@@ -208,10 +212,12 @@ public class History {
             existing.selected = existing.selected || entry.selected;
             if (existing.modifiedDate.before(entry.modifiedDate)) {
                 existing.modifiedDate = entry.modifiedDate;
-                // Prefer the skip flag from the more recently modified entry.
+                // Prefer status flags from the more recently modified entry.
                 existing.skipped = entry.skipped;
+                existing.failed = entry.failed;
             } else if (existing.modifiedDate.equals(entry.modifiedDate)) {
                 existing.skipped = existing.skipped || entry.skipped;
+                existing.failed = existing.failed || entry.failed;
             }
             if (existing.startDate.after(entry.startDate)) {
                 existing.startDate = entry.startDate;

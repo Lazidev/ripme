@@ -1197,9 +1197,10 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 width = 270;
                 break;
             case 3: // Skipped
-            case 4: // D#
-            case 5: // latest
-            case 6: // #
+            case 4: // Failed
+            case 5: // D#
+            case 6: // latest
+            case 7: // #
                 width = 40;
                 break;
             default:
@@ -2732,6 +2733,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                     entry.dir = ripper.getWorkingDir().getAbsolutePath();
                     entry.startDate = new Date();
                     entry.modifiedDate = new Date();
+                    entry.skipped = false;
+                    entry.failed = false;
                     HISTORY.add(entry);
                     historyTableModel.fireTableDataChanged();
                     saveHistory();
@@ -2739,6 +2742,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                     HistoryEntry entry = HISTORY.getEntryByURL(ripUrl);
                     entry.latestCount = 0;
                     entry.skipped = false;
+                    entry.failed = false;
                     if (entry.dir == null || entry.dir.isEmpty()) {
                         entry.dir = ripper.getWorkingDir().getAbsolutePath();
                     }
@@ -2784,6 +2788,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         HistoryEntry entry = HISTORY.getEntryByURL(ripUrl);
         entry.latestCount = 0;
         entry.skipped = true;
+        entry.failed = false;
         entry.modifiedDate = new Date();
         HISTORY.moveToBottom(entry);
         historyTableModel.fireTableDataChanged();
@@ -3154,6 +3159,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 entry.count += rsc.count;
                 entry.timesDownloaded += 1;
                 entry.skipped = false;
+                entry.failed = false;
                 entry.modifiedDate = new Date();
                 HISTORY.moveToBottom(entry);
                 if (entry.dir == null || entry.dir.isEmpty()) {
@@ -3167,6 +3173,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 entry.count = rsc.count;
                 entry.timesDownloaded = 1;
                 entry.skipped = false;
+                entry.failed = false;
                 try {
                     entry.title = evt.ripper.getAlbumTitle(evt.ripper.getURL());
                 } catch (MalformedURLException | URISyntaxException e) {
@@ -3265,7 +3272,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     }
 
     /**
-     * Keeps a history row for a rip that ended with nothing downloaded (0/0).
+     * Keeps a history row for a rip that errored out: URL stays visible with Failed=1 and 0/0 latest.
      */
     private void finalizeEmptyHistoryEntry(AbstractRipper ripper) {
         String url = normalizeQueueUrl(ripper.getURL().toExternalForm());
@@ -3275,6 +3282,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             entry.latestCount = 0;
             entry.timesDownloaded += 1;
             entry.skipped = false;
+            entry.failed = true;
             entry.modifiedDate = new Date();
             if (entry.dir == null || entry.dir.isEmpty()) {
                 entry.dir = ripper.getWorkingDir().getAbsolutePath();
@@ -3288,6 +3296,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             entry.count = 0;
             entry.timesDownloaded = 1;
             entry.skipped = false;
+            entry.failed = true;
             entry.startDate = new Date();
             entry.modifiedDate = new Date();
             HISTORY.add(entry);
