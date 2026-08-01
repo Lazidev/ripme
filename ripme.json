@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.288-1-8b2704e",
-  "currentHash": "c3de2ef702bd0f4899f4333532b08d97f357fc141d7d06581b507a97427cfb65",
+  "latestVersion": "2.1.289-1-7767232",
+  "currentHash": "6014de855d8f933a07375ecac2fb1cc28163073d4e03461f0798778ce2952bb9",
   "changeList": [
+    "2.1.289-1-7767232: Tweak history columns and add pause-queue on Active downloads.",
+    "2.1.289-1-7767232: Built at 2026-08-01T12:29:39Z",
     "2.1.288-1-8b2704e: Add Skipped and D# columns to the history table.",
     "2.1.288-1-8b2704e: Built at 2026-08-01T12:16:51Z",
     "2.1.287-1-6cfc136: Fix per-domain concurrency overrun and stalled restored queues.",
