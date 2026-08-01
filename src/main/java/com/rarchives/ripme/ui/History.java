@@ -26,6 +26,8 @@ public class History {
         "created",
         "modified",
         "latest",
+        "Skipped",
+        "D#",
         "#",
         ""
     };
@@ -67,12 +69,35 @@ public class History {
         case 3:
             return entry.latestCount;
         case 4:
-            return entry.count;
+            return entry.skipped;
         case 5:
+            return entry.timesDownloaded;
+        case 6:
+            return entry.count;
+        case 7:
             return entry.selected;
         default:
             return null;
         }
+    }
+
+    public Class<?> getColumnClass(int col) {
+        switch (col) {
+        case 3:
+        case 5:
+        case 6:
+            return Integer.class;
+        case 4:
+        case 7:
+            return Boolean.class;
+        default:
+            return String.class;
+        }
+    }
+
+    /** Column index of the selectable checkbox. */
+    public int getSelectedColumnIndex() {
+        return 7;
     }
     private String dateToHumanReadable(Date date) {
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy/MM/dd HH:mm:ss");
@@ -179,12 +204,17 @@ public class History {
             }
             existing.count += entry.count;
             existing.latestCount += entry.latestCount;
+            existing.timesDownloaded += entry.timesDownloaded;
             existing.selected = existing.selected || entry.selected;
-            if (existing.startDate.after(entry.startDate)) {
-                existing.startDate = entry.startDate;
-            }
             if (existing.modifiedDate.before(entry.modifiedDate)) {
                 existing.modifiedDate = entry.modifiedDate;
+                // Prefer the skip flag from the more recently modified entry.
+                existing.skipped = entry.skipped;
+            } else if (existing.modifiedDate.equals(entry.modifiedDate)) {
+                existing.skipped = existing.skipped || entry.skipped;
+            }
+            if (existing.startDate.after(entry.startDate)) {
+                existing.startDate = entry.startDate;
             }
             if ((existing.title == null || existing.title.isEmpty()) && entry.title != null && !entry.title.isEmpty()) {
                 existing.title = entry.title;

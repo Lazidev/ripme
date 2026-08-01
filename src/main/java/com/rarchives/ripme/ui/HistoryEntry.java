@@ -10,10 +10,12 @@ public class HistoryEntry {
                    title        = "",
                    dir          = "";
     public int     count        = 0,
-                   latestCount  = 0;
+                   latestCount  = 0,
+                   timesDownloaded = 0;
     public Date    startDate    = new Date(),
                    modifiedDate = new Date();
-    public boolean selected     = false;
+    public boolean selected     = false,
+                   skipped      = false;
 
     public HistoryEntry() {
     }
@@ -31,11 +33,17 @@ public class HistoryEntry {
         if (json.has("latestCount")) {
             this.latestCount = json.getInt("latestCount");
         }
+        if (json.has("timesDownloaded")) {
+            this.timesDownloaded = json.getInt("timesDownloaded");
+        }
         if (json.has("dir")) {
             this.dir      = json.getString("dir");
         }
         if (json.has("selected")) {
             this.selected = json.getBoolean("selected");
+        }
+        if (json.has("skipped")) {
+            this.skipped = json.getBoolean("skipped");
         }
         return this;
     }
@@ -48,7 +56,12 @@ public class HistoryEntry {
         json.put("title",        this.title);
         json.put("count",        this.count);
         json.put("latestCount",  this.latestCount);
+        json.put("timesDownloaded", this.timesDownloaded);
+        json.put("skipped",      this.skipped);
         json.put("selected",     this.selected);
+        if (this.dir != null && !this.dir.isEmpty()) {
+            json.put("dir", this.dir);
+        }
         return json;
     }
 

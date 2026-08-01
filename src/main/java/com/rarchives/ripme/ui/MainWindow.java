@@ -984,7 +984,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
             @Override
             public Class<?> getColumnClass(int c) {
-                return getValueAt(0, c).getClass();
+                return HISTORY.getColumnClass(c);
             }
 
             @Override
@@ -1004,12 +1004,12 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
             @Override
             public boolean isCellEditable(int row, int col) {
-                return (col == 0 || col == 5);
+                return (col == 0 || col == HISTORY.getSelectedColumnIndex());
             }
 
             @Override
             public void setValueAt(Object value, int row, int col) {
-                if (col == 5) {
+                if (col == HISTORY.getSelectedColumnIndex()) {
                     HISTORY.get(row).selected = (Boolean) value;
                     historyTableModel.fireTableDataChanged();
                 }
@@ -1021,20 +1021,25 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         historyTableSorter = new TableRowSorter<>(historyTableModel);
         historyTable.setRowSorter(historyTableSorter);
 
+        int selectedCol = HISTORY.getSelectedColumnIndex();
         for (int i = 0; i < historyTable.getColumnModel().getColumnCount(); i++) {
             int width = 130; // Default
             switch (i) {
             case 0: // URL
                 width = 270;
                 break;
-            case 3:
+            case 3: // latest
+            case 5: // D#
+            case 6: // #
                 width = 40;
                 break;
-            case 4:
-                width = 40;
+            case 4: // Skipped
+                width = 55;
                 break;
-            case 5:
-                width = 15;
+            default:
+                if (i == selectedCol) {
+                    width = 15;
+                }
                 break;
             }
             historyTable.getColumnModel().getColumn(i).setPreferredWidth(width);
@@ -2495,6 +2500,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 } else {
                     HistoryEntry entry = HISTORY.getEntryByURL(ripUrl);
                     entry.latestCount = 0;
+                    entry.skipped = false;
                     if (entry.dir == null || entry.dir.isEmpty()) {
                         entry.dir = ripper.getWorkingDir().getAbsolutePath();
                     }
@@ -2539,6 +2545,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         }
         HistoryEntry entry = HISTORY.getEntryByURL(ripUrl);
         entry.latestCount = 0;
+        entry.skipped = true;
         entry.modifiedDate = new Date();
         HISTORY.moveToBottom(entry);
         historyTableModel.fireTableDataChanged();
@@ -2898,6 +2905,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 } else {
                     entry.latestCount = rsc.count;
                     entry.count += rsc.count;
+                    entry.timesDownloaded += 1;
+                    entry.skipped = false;
                     entry.modifiedDate = new Date();
                     HISTORY.moveToBottom(entry);
                     if (entry.dir == null || entry.dir.isEmpty()) {
@@ -2910,6 +2919,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 entry.dir = rsc.getDir();
                 entry.latestCount = rsc.count;
                 entry.count = rsc.count;
+                entry.timesDownloaded = 1;
+                entry.skipped = false;
                 try {
                     entry.title = evt.ripper.getAlbumTitle(evt.ripper.getURL());
                 } catch (MalformedURLException | URISyntaxException e) {

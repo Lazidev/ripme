@@ -18,6 +18,8 @@ public class HistoryNormalizationMergeTest {
         first.url = "https://example.com/post?id=42&utm_source=twitter";
         first.count = 7;
         first.latestCount = 2;
+        first.timesDownloaded = 2;
+        first.skipped = false;
         first.startDate = new Date(1000);
         first.modifiedDate = new Date(2000);
         first.title = "Album";
@@ -28,6 +30,8 @@ public class HistoryNormalizationMergeTest {
         second.url = "https://example.com/post?id=42&fbclid=abc";
         second.count = 3;
         second.latestCount = 1;
+        second.timesDownloaded = 3;
+        second.skipped = true;
         second.startDate = new Date(500);
         second.modifiedDate = new Date(3000);
         second.selected = true;
@@ -40,6 +44,8 @@ public class HistoryNormalizationMergeTest {
         assertEquals("https://example.com/post?id=42", merged.url);
         assertEquals(10, merged.count);
         assertEquals(3, merged.latestCount);
+        assertEquals(5, merged.timesDownloaded);
+        assertTrue(merged.skipped);
         assertEquals(new Date(500), merged.startDate);
         assertEquals(new Date(3000), merged.modifiedDate);
     }
@@ -84,5 +90,21 @@ public class HistoryNormalizationMergeTest {
         assertFalse(history.hasDownloaded("https://example.com/empty"));
         assertFalse(history.hasDownloaded("https://example.com/missing"));
         assertTrue(history.hasDownloaded("https://example.com/done"));
+    }
+
+    @Test
+    public void roundTripsSkippedAndTimesDownloaded() {
+        HistoryEntry entry = new HistoryEntry();
+        entry.url = "https://example.com/album";
+        entry.skipped = true;
+        entry.timesDownloaded = 4;
+        entry.count = 12;
+        entry.latestCount = 0;
+
+        HistoryEntry restored = new HistoryEntry().fromJSON(entry.toJSON());
+        assertTrue(restored.skipped);
+        assertEquals(4, restored.timesDownloaded);
+        assertEquals(12, restored.count);
+        assertEquals(0, restored.latestCount);
     }
 }

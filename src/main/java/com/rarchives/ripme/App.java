@@ -119,6 +119,7 @@ public class App {
             logger.info("Skipping already downloaded URL: " + u);
             HistoryEntry entry = HISTORY.getEntryByURL(u);
             entry.latestCount = 0;
+            entry.skipped = true;
             entry.modifiedDate = new Date();
             HISTORY.moveToBottom(entry);
             saveHistory();
@@ -131,10 +132,14 @@ public class App {
         if (HISTORY.containsURL(u)) {
             HistoryEntry entry = HISTORY.getEntryByURL(u);
             entry.modifiedDate = date;
+            entry.skipped = false;
+            entry.timesDownloaded += 1;
         } else {
             HistoryEntry entry = new HistoryEntry();
             entry.url = u;
             entry.dir = ripper.getWorkingDir().getAbsolutePath();
+            entry.timesDownloaded = 1;
+            entry.skipped = false;
             try {
                 entry.title = ripper.getAlbumTitle(ripper.getURL());
             } catch (MalformedURLException ignored) { }

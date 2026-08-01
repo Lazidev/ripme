@@ -20,8 +20,9 @@ class HistoryMenuMouseListener extends MouseAdapter {
         Action checkAllAction = new AbstractAction(Utils.getLocalizedString("history.check.all")) {
             @Override
             public void actionPerformed(ActionEvent ae) {
+                int selectedCol = selectedColumnIndex();
                 for (int row = 0; row < tableComponent.getRowCount(); row++) {
-                    tableComponent.setValueAt(true, row, 5);
+                    tableComponent.setValueAt(true, row, selectedCol);
                 }
             }
         };
@@ -30,8 +31,9 @@ class HistoryMenuMouseListener extends MouseAdapter {
         Action uncheckAllAction = new AbstractAction(Utils.getLocalizedString("history.check.none")) {
             @Override
             public void actionPerformed(ActionEvent ae) {
+                int selectedCol = selectedColumnIndex();
                 for (int row = 0; row < tableComponent.getRowCount(); row++) {
-                    tableComponent.setValueAt(false, row, 5);
+                    tableComponent.setValueAt(false, row, selectedCol);
                 }
             }
         };
@@ -42,8 +44,9 @@ class HistoryMenuMouseListener extends MouseAdapter {
         Action checkSelected = new AbstractAction(Utils.getLocalizedString("history.check.selected")) {
             @Override
             public void actionPerformed(ActionEvent ae) {
+                int selectedCol = selectedColumnIndex();
                 for (int row : tableComponent.getSelectedRows()) {
-                    tableComponent.setValueAt(true, row, 5);
+                    tableComponent.setValueAt(true, row, selectedCol);
                 }
             }
         };
@@ -52,12 +55,21 @@ class HistoryMenuMouseListener extends MouseAdapter {
         Action uncheckSelected = new AbstractAction(Utils.getLocalizedString("history.uncheck.selected")) {
             @Override
             public void actionPerformed(ActionEvent ae) {
+                int selectedCol = selectedColumnIndex();
                 for (int row : tableComponent.getSelectedRows()) {
-                    tableComponent.setValueAt(false, row, 5);
+                    tableComponent.setValueAt(false, row, selectedCol);
                 }
             }
         };
         popup.add(uncheckSelected);
+    }
+
+    private int selectedColumnIndex() {
+        if (tableComponent != null && tableComponent.getModel() != null) {
+            // Checkbox is always the last column.
+            return tableComponent.getModel().getColumnCount() - 1;
+        }
+        return 7;
     }
 
     @Override
