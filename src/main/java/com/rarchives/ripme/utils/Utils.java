@@ -33,6 +33,7 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.concurrent.Callable;
 import java.util.stream.Stream;
 import java.security.DigestInputStream;
 import java.security.MessageDigest;
@@ -155,8 +156,69 @@ public class Utils {
         return configStringArray.length == 0 ? null : configStringArray;
     }
 
+    /**
+     * Per-thread temporary overrides for config reads (e.g. per-queue maxdownloads).
+     * Cleared when the map is empty to avoid ThreadLocal leaks on pooled threads.
+     */
+    private static final ThreadLocal<Map<String, Object>> CONFIG_OVERRIDES = new ThreadLocal<>();
+
     public static int getConfigInteger(String key, int defaultValue) {
+        Object override = getConfigOverride(key);
+        if (override instanceof Number) {
+            return ((Number) override).intValue();
+        }
         return config.getInt(key, defaultValue);
+    }
+
+    /**
+     * Runs {@code action} with a temporary config value visible only on this thread.
+     * Nested overrides for the same key restore the previous override when finished.
+     */
+    public static void withConfigOverride(String key, Object value, Runnable action) {
+        try {
+            withConfigOverride(key, value, () -> {
+                action.run();
+                return null;
+            });
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Runs {@code action} with a temporary config value visible only on this thread.
+     * Nested overrides for the same key restore the previous override when finished.
+     */
+    public static <T> T withConfigOverride(String key, Object value, Callable<T> action) throws Exception {
+        Map<String, Object> overrides = CONFIG_OVERRIDES.get();
+        if (overrides == null) {
+            overrides = new HashMap<>();
+            CONFIG_OVERRIDES.set(overrides);
+        }
+        boolean hadPrevious = overrides.containsKey(key);
+        Object previous = overrides.put(key, value);
+        try {
+            return action.call();
+        } finally {
+            if (hadPrevious) {
+                overrides.put(key, previous);
+            } else {
+                overrides.remove(key);
+            }
+            if (overrides.isEmpty()) {
+                CONFIG_OVERRIDES.remove();
+            }
+        }
+    }
+
+    private static Object getConfigOverride(String key) {
+        Map<String, Object> overrides = CONFIG_OVERRIDES.get();
+        if (overrides == null) {
+            return null;
+        }
+        return overrides.get(key);
     }
 
     public static long getConfigLong(String key, long defaultValue) {

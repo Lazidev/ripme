@@ -39,7 +39,7 @@ public class MainWindowDomainQueueTest {
         CountDownLatch finishLatch = new CountDownLatch(3);
 
         // Domain slots are reserved by ripNextAlbum before the launcher runs.
-        mainWindow.setRipperLauncher((url, domain) -> {
+        mainWindow.setRipperLauncher((url, domain, forceRip, maxDownloads) -> {
             startedDomains.add(domain + ":" + url);
             startLatch.countDown();
 
@@ -86,7 +86,7 @@ public class MainWindowDomainQueueTest {
         CountDownLatch bothSameDomainStarted = new CountDownLatch(2);
         CountDownLatch finishLatch = new CountDownLatch(3);
 
-        mainWindow.setRipperLauncher((url, domain) -> {
+        mainWindow.setRipperLauncher((url, domain, forceRip, maxDownloads) -> {
             startedUrls.add(url);
             int inFlight = mainWindow.getActiveDomainCounts()
                     .getOrDefault(domain, new AtomicInteger())
@@ -139,7 +139,7 @@ public class MainWindowDomainQueueTest {
         CountDownLatch finishLatch = new CountDownLatch(2);
         AtomicInteger maxInFlight = new AtomicInteger();
 
-        mainWindow.setRipperLauncher((url, domain) -> {
+        mainWindow.setRipperLauncher((url, domain, forceRip, maxDownloads) -> {
             startedUrls.add(url);
             int inFlight = mainWindow.getActiveDomainCounts()
                     .getOrDefault(domain, new AtomicInteger())

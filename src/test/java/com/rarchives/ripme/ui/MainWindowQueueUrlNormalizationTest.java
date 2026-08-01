@@ -6,6 +6,8 @@ import java.io.IOException;
 
 import org.junit.jupiter.api.Test;
 
+import com.rarchives.ripme.utils.Utils;
+
 public class MainWindowQueueUrlNormalizationTest {
 
     @Test
@@ -45,7 +47,8 @@ public class MainWindowQueueUrlNormalizationTest {
 
         MainWindow.addUrlToQueue("https://www.instagram.com/beccapoppyhaigh/?g=5");
 
-        assertEquals("https://www.instagram.com/beccapoppyhaigh", MainWindow.getQueueListModel().get(0));
+        assertEquals("https://www.instagram.com/beccapoppyhaigh",
+                QueueEntry.from(MainWindow.getQueueListModel().get(0)).getUrl());
     }
 
     @Test
@@ -57,6 +60,47 @@ public class MainWindowQueueUrlNormalizationTest {
         MainWindow.addUrlToQueue("https://example.com/post?id=42");
 
         assertEquals(1, MainWindow.getQueueListModel().size());
-        assertEquals("https://example.com/post?id=42", MainWindow.getQueueListModel().get(0));
+        assertEquals("https://example.com/post?id=42",
+                QueueEntry.from(MainWindow.getQueueListModel().get(0)).getUrl());
+    }
+
+    @Test
+    public void forceFlagSurvivesConfigRoundTripEncoding() {
+        QueueEntry forced = new QueueEntry("https://example.com/a", true);
+        QueueEntry restored = QueueEntry.fromConfigString(forced.toConfigString());
+        assertEquals("https://example.com/a", restored.getUrl());
+        assertEquals(true, restored.isForceRip());
+
+        QueueEntry normal = QueueEntry.fromConfigString("https://example.com/b");
+        assertEquals("https://example.com/b", normal.getUrl());
+        assertEquals(false, normal.isForceRip());
+    }
+
+    @Test
+    public void maxDownloadsSurvivesConfigRoundTripEncoding() {
+        QueueEntry withMax = new QueueEntry("https://example.com/a", false, 42);
+        QueueEntry restored = QueueEntry.fromConfigString(withMax.toConfigString());
+        assertEquals("https://example.com/a", restored.getUrl());
+        assertEquals(false, restored.isForceRip());
+        assertEquals(Integer.valueOf(42), restored.getMaxDownloads());
+
+        QueueEntry forcedMax = new QueueEntry("https://example.com/b", true, 10);
+        QueueEntry restoredForced = QueueEntry.fromConfigString(forcedMax.toConfigString());
+        assertEquals("https://example.com/b", restoredForced.getUrl());
+        assertEquals(true, restoredForced.isForceRip());
+        assertEquals(Integer.valueOf(10), restoredForced.getMaxDownloads());
+        assertEquals("force|max=10|https://example.com/b", forcedMax.toConfigString());
+    }
+
+    @Test
+    public void addUrlToQueueDefaultsMaxDownloadsFromConfig() throws IOException {
+        MainWindow mainWindow = new MainWindow(true);
+        MainWindow.getQueueListModel().clear();
+
+        MainWindow.addUrlToQueue("https://example.com/album");
+
+        QueueEntry entry = QueueEntry.from(MainWindow.getQueueListModel().get(0));
+        assertEquals(Utils.getConfigInteger("maxdownloads", 250), entry.getEffectiveMaxDownloads());
+        assertEquals(Integer.valueOf(Utils.getConfigInteger("maxdownloads", 250)), entry.getMaxDownloads());
     }
 }

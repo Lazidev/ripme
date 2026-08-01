@@ -27,6 +27,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
 import java.util.Map;
 import java.util.MissingResourceException;
@@ -35,7 +36,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.BiConsumer;
 import java.util.stream.Stream;
 
 import javax.imageio.ImageIO;
@@ -116,7 +116,12 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     /** Count of in-flight album rips keyed by hostname (lowercased). */
     private final ConcurrentHashMap<String, AtomicInteger> activeDomainCounts = new ConcurrentHashMap<>();
     private final ExecutorService ripExecutor = Executors.newCachedThreadPool();
-    private BiConsumer<String, String> ripperLauncher = this::launchRipper;
+    private QueueRipLauncher ripperLauncher = this::launchRipper;
+
+    @FunctionalInterface
+    interface QueueRipLauncher {
+        void launch(String url, String domain, boolean forceRip, Integer maxDownloads);
+    }
 
     private static JFrame mainFrame;
 
@@ -150,7 +155,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     public static JButton optionQueue;
     private static JPanel queuePanel;
     private static DefaultListModel<Object> queueListModel;
-    private static JList<Object> queueList;
+    private static JTable queueTable;
+    private static AbstractTableModel queueTableModel;
     private static QueueMenuMouseListener queueMenuMouseListener;
     private static JButton queueButtonTop, queueButtonUp, queueButtonDown, queuePauseButton;
 
@@ -217,12 +223,22 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             model = queueListModel;
 
         if (model.size() > 0) {
-            Utils.setConfigList("queue", model.elements());
+            List<Object> serialized = new ArrayList<>();
+            for (int i = 0; i < model.size(); i++) {
+                QueueEntry entry = QueueEntry.from(model.get(i));
+                if (entry != null) {
+                    serialized.add(entry.toConfigString());
+                }
+            }
+            Utils.setConfigList("queue", serialized);
             Utils.saveConfig();
         }
 
         MainWindow.optionQueue.setText(String.format("%s%s", Utils.getLocalizedString("queue"),
                 model.size() == 0 ? "" : "(" + model.size() + ")"));
+        if (queueTableModel != null) {
+            queueTableModel.fireTableDataChanged();
+        }
     }
 
     private void updateQueue() {
@@ -406,7 +422,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                             statusWithColor("Domain at concurrent limit; queued " + pausedUrl, Color.ORANGE);
                         } else {
                             acquireDomain(domain);
-                            ripperLauncher.accept(pausedUrl, domain);
+                            ripperLauncher.launch(pausedUrl, domain, false, null);
                         }
                         refreshActivePanel();
                     });
@@ -594,11 +610,38 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     }
 
     public static void addUrlToQueue(String url) {
+        addUrlToQueue(url, false, null);
+    }
+
+    public static void addUrlToQueue(String url, boolean forceRip) {
+        addUrlToQueue(url, forceRip, null);
+    }
+
+    public static void addUrlToQueue(String url, boolean forceRip, Integer maxDownloads) {
         String normalized = normalizeQueueUrl(url);
-        if (normalized == null || normalized.isEmpty() || queueListModel.contains(normalized)) {
+        if (normalized == null || normalized.isEmpty()) {
             return;
         }
-        queueListModel.addElement(normalized);
+        Integer effectiveMax = maxDownloads != null ? maxDownloads : Utils.getConfigInteger("maxdownloads", 250);
+        for (int i = 0; i < queueListModel.size(); i++) {
+            QueueEntry existing = QueueEntry.from(queueListModel.get(i));
+            if (existing != null && normalized.equals(existing.getUrl())) {
+                boolean changed = false;
+                if (forceRip && !existing.isForceRip()) {
+                    existing.setForceRip(true);
+                    changed = true;
+                }
+                if (maxDownloads != null && !Objects.equals(maxDownloads, existing.getMaxDownloads())) {
+                    existing.setMaxDownloads(maxDownloads);
+                    changed = true;
+                }
+                if (changed) {
+                    queueListModel.set(i, existing);
+                }
+                return;
+            }
+        }
+        queueListModel.addElement(new QueueEntry(normalized, forceRip, effectiveMax));
     }
 
     public static String normalizeQueueUrl(String rawUrl) {
@@ -668,17 +711,31 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     }
 
     private void normalizeAndDeduplicateQueue() {
-        LinkedHashMap<String, Object> normalized = new LinkedHashMap<>();
+        LinkedHashMap<String, QueueEntry> normalized = new LinkedHashMap<>();
         for (int i = 0; i < queueListModel.size(); i++) {
-            Object item = queueListModel.get(i);
-            String value = item == null ? null : item.toString();
-            String normalizedUrl = normalizeQueueUrl(value);
-            if (normalizedUrl != null && !normalizedUrl.isEmpty()) {
-                normalized.putIfAbsent(normalizedUrl, normalizedUrl);
+            QueueEntry entry = QueueEntry.from(queueListModel.get(i));
+            if (entry == null) {
+                continue;
+            }
+            String normalizedUrl = normalizeQueueUrl(entry.getUrl());
+            if (normalizedUrl == null || normalizedUrl.isEmpty()) {
+                continue;
+            }
+            QueueEntry existing = normalized.get(normalizedUrl);
+            if (existing == null) {
+                normalized.put(normalizedUrl,
+                        new QueueEntry(normalizedUrl, entry.isForceRip(), entry.getMaxDownloads()));
+            } else {
+                if (entry.isForceRip()) {
+                    existing.setForceRip(true);
+                }
+                if (existing.getMaxDownloads() == null && entry.getMaxDownloads() != null) {
+                    existing.setMaxDownloads(entry.getMaxDownloads());
+                }
             }
         }
         queueListModel.clear();
-        for (Object value : normalized.values()) {
+        for (QueueEntry value : normalized.values()) {
             queueListModel.addElement(value);
         }
     }
@@ -726,13 +783,119 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
     private void initializeHeadlessComponents() {
         queueListModel = new DefaultListModel<>();
-        queueList = new JList<>(queueListModel);
+        queueTableModel = createQueueTableModel();
+        queueTable = new JTable(queueTableModel);
         optionQueue = new JButton(Utils.getLocalizedString("queue"));
         queuePauseButton = new JButton();
         updateQueuePauseButtonLabel();
         stopButton = new JButton();
         pauseButton = new JButton();
         statusProgress = new JProgressBar();
+    }
+
+    private AbstractTableModel createQueueTableModel() {
+        return new AbstractTableModel() {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public int getRowCount() {
+                return queueListModel == null ? 0 : queueListModel.size();
+            }
+
+            @Override
+            public int getColumnCount() {
+                return 3;
+            }
+
+            @Override
+            public String getColumnName(int col) {
+                if (col == 0) {
+                    return "URL";
+                }
+                if (col == 1) {
+                    return Utils.getLocalizedString("queue.force");
+                }
+                return Utils.getLocalizedString("queue.max");
+            }
+
+            @Override
+            public Class<?> getColumnClass(int col) {
+                if (col == 0) {
+                    return String.class;
+                }
+                if (col == 1) {
+                    return Boolean.class;
+                }
+                return Integer.class;
+            }
+
+            @Override
+            public boolean isCellEditable(int row, int col) {
+                return col == 1 || col == 2;
+            }
+
+            @Override
+            public Object getValueAt(int row, int col) {
+                QueueEntry entry = QueueEntry.from(queueListModel.get(row));
+                if (entry == null) {
+                    if (col == 0) {
+                        return "";
+                    }
+                    if (col == 1) {
+                        return Boolean.FALSE;
+                    }
+                    return Utils.getConfigInteger("maxdownloads", 250);
+                }
+                if (col == 0) {
+                    return entry.getUrl();
+                }
+                if (col == 1) {
+                    return entry.isForceRip();
+                }
+                return entry.getEffectiveMaxDownloads();
+            }
+
+            @Override
+            public void setValueAt(Object value, int row, int col) {
+                if (row < 0 || row >= queueListModel.size() || (col != 1 && col != 2)) {
+                    return;
+                }
+                QueueEntry entry = QueueEntry.from(queueListModel.get(row));
+                if (entry == null) {
+                    return;
+                }
+                if (col == 1) {
+                    entry.setForceRip(Boolean.TRUE.equals(value));
+                } else {
+                    Integer parsed = parseMaxDownloads(value);
+                    if (parsed == null) {
+                        return;
+                    }
+                    entry.setMaxDownloads(parsed);
+                }
+                queueListModel.set(row, entry);
+                fireTableCellUpdated(row, col);
+                updateQueue();
+            }
+        };
+    }
+
+    private static Integer parseMaxDownloads(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
+        }
+        if (value == null) {
+            return null;
+        }
+        String text = value.toString().trim();
+        if (text.isEmpty()) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(text);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private void upgradeProgram() {
@@ -1110,11 +1273,20 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         queuePanel.setBorder(emptyBorder);
         queuePanel.setVisible(false);
         queueListModel = new DefaultListModel<>();
-        queueList = new JList<>(queueListModel);
-        queueList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+        queueTableModel = createQueueTableModel();
+        queueTable = new JTable(queueTableModel);
+        queueTable.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
+        queueTable.setFillsViewportHeight(true);
+        queueTable.getColumnModel().getColumn(0).setPreferredWidth(320);
+        queueTable.getColumnModel().getColumn(1).setPreferredWidth(50);
+        queueTable.getColumnModel().getColumn(1).setMaxWidth(70);
+        queueTable.getColumnModel().getColumn(2).setPreferredWidth(55);
+        queueTable.getColumnModel().getColumn(2).setMaxWidth(80);
+        queueTable.getTableHeader().setReorderingAllowed(false);
+        queueTable.getTableHeader().setToolTipText(Utils.getLocalizedString("queue.max.tooltip"));
         queueMenuMouseListener = new QueueMenuMouseListener(d -> updateQueue(queueListModel));
-        queueList.addMouseListener(queueMenuMouseListener);
-        JScrollPane queueListScroll = new JScrollPane(queueList, JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
+        queueTable.addMouseListener(queueMenuMouseListener);
+        JScrollPane queueListScroll = new JScrollPane(queueTable, JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
                 JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
 
         activePanel = new JPanel(new GridBagLayout());
@@ -1126,7 +1298,10 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 JScrollPane.HORIZONTAL_SCROLLBAR_AS_NEEDED);
 
         for (String item : Utils.getConfigList("queue")) {
-            addUrlToQueue(item);
+            QueueEntry entry = QueueEntry.fromConfigString(item);
+            if (entry != null) {
+                addUrlToQueue(entry.getUrl(), entry.isForceRip(), entry.getMaxDownloads());
+            }
         }
         normalizeAndDeduplicateQueue();
         updateQueue();
@@ -1145,7 +1320,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         queueButtonUp = new JButton("\u2191");
         queueButtonUp.setToolTipText(Utils.getLocalizedString("queue.move.up"));
         queueButtonUp.addActionListener(e -> {
-            int[] indices = queueList.getSelectedIndices();
+            int[] indices = queueTable.getSelectedRows();
             if (indices.length == 0) {
                 return;
             }
@@ -1158,14 +1333,18 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                     indices[i] = index - 1;
                 }
             }
-            queueList.setSelectedIndices(indices);
+            queueTableModel.fireTableDataChanged();
+            queueTable.clearSelection();
+            for (int index : indices) {
+                queueTable.addRowSelectionInterval(index, index);
+            }
             queueMenuMouseListener.updateUI();
         });
 
         queueButtonDown = new JButton("\u2193");
         queueButtonDown.setToolTipText(Utils.getLocalizedString("queue.move.down"));
         queueButtonDown.addActionListener(e -> {
-            int[] indices = queueList.getSelectedIndices();
+            int[] indices = queueTable.getSelectedRows();
             if (indices.length == 0) {
                 return;
             }
@@ -1178,14 +1357,18 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                     indices[i] = index + 1;
                 }
             }
-            queueList.setSelectedIndices(indices);
+            queueTableModel.fireTableDataChanged();
+            queueTable.clearSelection();
+            for (int index : indices) {
+                queueTable.addRowSelectionInterval(index, index);
+            }
             queueMenuMouseListener.updateUI();
         });
 
         queueButtonTop = new JButton("\u21A5");
         queueButtonTop.setToolTipText(Utils.getLocalizedString("queue.move.top"));
         queueButtonTop.addActionListener(e -> {
-            int[] indices = queueList.getSelectedIndices();
+            int[] indices = queueTable.getSelectedRows();
             if (indices.length == 0) {
                 return;
             }
@@ -1199,11 +1382,11 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             for (int i = 0; i < selected.size(); i++) {
                 queueListModel.add(i, selected.get(i));
             }
-            int[] newIndices = new int[selected.size()];
+            queueTableModel.fireTableDataChanged();
+            queueTable.clearSelection();
             for (int i = 0; i < selected.size(); i++) {
-                newIndices[i] = i;
+                queueTable.addRowSelectionInterval(i, i);
             }
-            queueList.setSelectedIndices(newIndices);
             queueMenuMouseListener.updateUI();
         });
 
@@ -2133,6 +2316,9 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
             @Override
             public void intervalRemoved(ListDataEvent arg0) {
+                if (queueTableModel != null) {
+                    queueTableModel.fireTableDataChanged();
+                }
             }
         });
     }
@@ -2390,7 +2576,14 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         }
 
         // Save current state of queue to configuration.
-        Utils.setConfigList("queue", queueListModel.elements());
+        List<Object> serializedQueue = new ArrayList<>();
+        for (int i = 0; i < queueListModel.size(); i++) {
+            QueueEntry entry = QueueEntry.from(queueListModel.get(i));
+            if (entry != null) {
+                serializedQueue.add(entry.toConfigString());
+            }
+        }
+        Utils.setConfigList("queue", serializedQueue);
 
         LOGGER.debug("Scanning queue ({} items) with active domains: {}", queueListModel.getSize(), activeDomainCounts);
 
@@ -2399,7 +2592,15 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         do {
             started = false;
             for (int i = 0; i < queueListModel.size(); i++) {
-                String nextAlbum = (String) queueListModel.get(i);
+                QueueEntry queueEntry = QueueEntry.from(queueListModel.get(i));
+                if (queueEntry == null) {
+                    queueListModel.remove(i);
+                    updateQueue();
+                    continue;
+                }
+                String nextAlbum = queueEntry.getUrl();
+                boolean forceRip = queueEntry.isForceRip();
+                Integer maxDownloads = queueEntry.getMaxDownloads();
                 String domain = getDomainFromUrl(nextAlbum);
                 if (domain == null) {
                     queueListModel.remove(i);
@@ -2417,8 +2618,9 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 // Reserve the domain slot before launchRipper/ripAlbum so re-entrant
                 // ripNextAlbum calls (or overlapping starts) cannot overrun max_per_domain.
                 acquireDomain(domain);
-                LOGGER.debug("Starting queued rip for domain {}: {}", domain, nextAlbum);
-                ripperLauncher.accept(nextAlbum, domain);
+                LOGGER.debug("Starting queued rip for domain {} (force={}, max={}): {}",
+                        domain, forceRip, maxDownloads, nextAlbum);
+                ripperLauncher.launch(nextAlbum, domain, forceRip, maxDownloads);
                 started = true;
                 break;
             }
@@ -2427,8 +2629,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         isRipping = hasActiveDomains() || !queueListModel.isEmpty();
     }
 
-    private void launchRipper(String urlString, String domain) {
-        RipperRun ripperRun = ripAlbum(urlString);
+    private void launchRipper(String urlString, String domain, boolean forceRip, Integer maxDownloads) {
+        RipperRun ripperRun = ripAlbum(urlString, forceRip, maxDownloads);
         if (ripperRun == null) {
             // Domain slot was reserved by ripNextAlbum (or resume); free it and continue the queue.
             onRipperFinished(domain, null);
@@ -2441,15 +2643,31 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         refreshActivePanel();
 
         ripExecutor.submit(() -> {
-            try {
-                ripperRun.thread.run();
-            } finally {
-                onRipperFinished(domain, ripperRun.ripper);
+            Runnable run = () -> {
+                try {
+                    ripperRun.thread.run();
+                } finally {
+                    onRipperFinished(domain, ripperRun.ripper);
+                }
+            };
+            // Keep the override on the worker thread so rippers that re-read maxdownloads mid-rip see it.
+            if (maxDownloads != null) {
+                Utils.withConfigOverride("maxdownloads", maxDownloads, run);
+            } else {
+                run.run();
             }
         });
     }
 
     private RipperRun ripAlbum(String urlString) {
+        return ripAlbum(urlString, false, null);
+    }
+
+    private RipperRun ripAlbum(String urlString, boolean forceRip) {
+        return ripAlbum(urlString, forceRip, null);
+    }
+
+    private RipperRun ripAlbum(String urlString, boolean forceRip, Integer maxDownloads) {
         if (!logPanel.isVisible()) {
             optionLog.doClick();
         }
@@ -2477,9 +2695,14 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         boolean failed = false;
         AbstractRipper ripper = null;
         try {
-            ripper = AbstractRipper.getRipper(url);
+            // Override during construction so final maxDownloads fields pick up the per-queue value.
+            if (maxDownloads != null) {
+                ripper = Utils.withConfigOverride("maxdownloads", maxDownloads, () -> AbstractRipper.getRipper(url));
+            } else {
+                ripper = AbstractRipper.getRipper(url);
+            }
             String ripUrl = normalizeQueueUrl(ripper.getURL().toExternalForm());
-            if (Utils.getConfigBoolean("skip.already_downloaded", false) && HISTORY.hasDownloaded(ripUrl)) {
+            if (!forceRip && Utils.getConfigBoolean("skip.already_downloaded", false) && HISTORY.hasDownloaded(ripUrl)) {
                 LOGGER.info("Skipping already downloaded URL: {}", ripUrl);
                 statusWithColor("Skipping already downloaded: " + ripUrl, Color.ORANGE);
                 recordSkippedRip(ripUrl);
@@ -2620,7 +2843,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         });
     }
 
-    void setRipperLauncher(BiConsumer<String, String> ripperLauncher) {
+    void setRipperLauncher(QueueRipLauncher ripperLauncher) {
         if (ripperLauncher != null) {
             this.ripperLauncher = ripperLauncher;
         }
@@ -2752,6 +2975,19 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         return queueListModel;
     }
 
+    private static boolean queueContainsUrl(String url) {
+        if (url == null || queueListModel == null) {
+            return false;
+        }
+        for (int i = 0; i < queueListModel.size(); i++) {
+            QueueEntry entry = QueueEntry.from(queueListModel.get(i));
+            if (entry != null && url.equals(entry.getUrl())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static class RipButtonHandler implements ActionListener {
         private MainWindow mainWindow;
 
@@ -2762,7 +2998,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         public void actionPerformed(ActionEvent event) {
             String url = normalizeQueueUrl(ripTextfield.getText());
             boolean url_not_empty = !url.equals("");
-            if (!queueListModel.contains(url) && url_not_empty) {
+            if (!queueContainsUrl(url) && url_not_empty) {
                 // Check if we're ripping a range of urls
                 if (url.contains("{")) {
                     // Make sure the user hasn't forgotten the closing }

@@ -21,7 +21,7 @@ public class MainWindowQueuePauseTest {
         mainWindow.getActiveDomainCounts().clear();
 
         AtomicInteger startedCount = new AtomicInteger(0);
-        mainWindow.setRipperLauncher((url, domain) -> startedCount.incrementAndGet());
+        mainWindow.setRipperLauncher((url, domain, forceRip, maxDownloads) -> startedCount.incrementAndGet());
 
         queue.addElement("http://example.com/first");
         mainWindow.setQueuePaused(true);
