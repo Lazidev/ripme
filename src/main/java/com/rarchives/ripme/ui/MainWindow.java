@@ -160,6 +160,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     private static JPanel activeListPanel;
     private static JButton activePauseAllButton;
     private static JButton activeResumeAllButton;
+    private static JButton activeQueuePauseButton;
     private static final String PAUSED_DOWNLOADS_FILENAME = "paused_downloads.json";
     private final List<String> pausedDownloadUrls = Collections.synchronizedList(new ArrayList<>());
 
@@ -229,8 +230,12 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     }
 
     private void updateQueuePauseButtonLabel() {
+        String label = Utils.getLocalizedString(queuePaused ? "queue.resume" : "queue.pause");
         if (queuePauseButton != null) {
-            queuePauseButton.setText(Utils.getLocalizedString(queuePaused ? "queue.resume" : "queue.pause"));
+            queuePauseButton.setText(label);
+        }
+        if (activeQueuePauseButton != null) {
+            activeQueuePauseButton.setText(label);
         }
     }
 
@@ -1028,13 +1033,11 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             case 0: // URL
                 width = 270;
                 break;
-            case 3: // latest
-            case 5: // D#
+            case 3: // Skipped
+            case 4: // D#
+            case 5: // latest
             case 6: // #
                 width = 40;
-                break;
-            case 4: // Skipped
-                width = 55;
                 break;
             default:
                 if (i == selectedCol) {
@@ -1237,9 +1240,12 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         activeGbc.gridy = 0;
         activePauseAllButton = new JButton(Utils.getLocalizedString("active.pause_all"));
         activeResumeAllButton = new JButton(Utils.getLocalizedString("active.resume_all"));
+        activeQueuePauseButton = new JButton();
+        updateQueuePauseButtonLabel();
         JPanel activeTopPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         activeTopPanel.add(activePauseAllButton);
         activeTopPanel.add(activeResumeAllButton);
+        activeTopPanel.add(activeQueuePauseButton);
         activePanel.add(activeTopPanel, activeGbc);
         activeGbc.gridy = 1;
         activeGbc.weighty = 1;
@@ -1752,6 +1758,13 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         optionQueue.setText(Utils.getLocalizedString("queue"));
         optionActive.setText(Utils.getLocalizedString("active.downloads"));
         optionConfiguration.setText(Utils.getLocalizedString("Configuration"));
+        if (activePauseAllButton != null) {
+            activePauseAllButton.setText(Utils.getLocalizedString("active.pause_all"));
+        }
+        if (activeResumeAllButton != null) {
+            activeResumeAllButton.setText(Utils.getLocalizedString("active.resume_all"));
+        }
+        updateQueuePauseButtonLabel();
         refreshActivePanel();
     }
 
@@ -1813,6 +1826,9 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         }
         if (activeResumeAllButton != null) {
             activeResumeAllButton.addActionListener(e -> resumeAll());
+        }
+        if (activeQueuePauseButton != null) {
+            activeQueuePauseButton.addActionListener(e -> setQueuePaused(!queuePaused));
         }
 
         optionLog.addActionListener(event -> {

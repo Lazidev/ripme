@@ -25,9 +25,9 @@ public class History {
         "URL",
         "created",
         "modified",
-        "latest",
         "Skipped",
         "D#",
+        "latest",
         "#",
         ""
     };
@@ -67,11 +67,11 @@ public class History {
         case 2:
             return dateToHumanReadable(entry.modifiedDate);
         case 3:
-            return entry.latestCount;
+            return entry.skipped ? 1 : 0;
         case 4:
-            return entry.skipped;
-        case 5:
             return entry.timesDownloaded;
+        case 5:
+            return entry.latestCount;
         case 6:
             return entry.count;
         case 7:
@@ -84,10 +84,10 @@ public class History {
     public Class<?> getColumnClass(int col) {
         switch (col) {
         case 3:
+        case 4:
         case 5:
         case 6:
             return Integer.class;
-        case 4:
         case 7:
             return Boolean.class;
         default:
