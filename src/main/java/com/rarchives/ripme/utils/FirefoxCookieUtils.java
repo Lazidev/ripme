@@ -174,9 +174,8 @@ public final class FirefoxCookieUtils {
             }
 
             String sql = buildCookieQuery(hostLikePatterns.size());
-            // Forward slashes keep jdbc query params valid on Windows; mode=ro avoids write locks.
-            String dbPath = tempCopy.toAbsolutePath().toString().replace('\\', '/');
-            String jdbcUrl = "jdbc:sqlite:" + dbPath + "?mode=ro";
+            // Plain path form only — sqlite-jdbc on Windows treats "?mode=ro" as part of the filename.
+            String jdbcUrl = buildSqliteJdbcUrl(tempCopy);
             try (Connection conn = DriverManager.getConnection(jdbcUrl);
                     PreparedStatement stmt = conn.prepareStatement(sql)) {
                 for (int i = 0; i < hostLikePatterns.size(); i++) {
@@ -218,6 +217,20 @@ public final class FirefoxCookieUtils {
         } catch (IOException e) {
             logger.debug("Failed to delete temporary Firefox cookie file {}", path, e);
         }
+    }
+
+    /**
+     * Builds a Windows-safe sqlite-jdbc URL for a local database file.
+     * <p>
+     * Must not append query parameters (e.g. {@code ?mode=ro}): on Windows, sqlite-jdbc
+     * treats them as part of the filename and fails with "The filename, directory name,
+     * or volume label syntax is incorrect".
+     *
+     * @param dbFile Path to the SQLite database file.
+     * @return A {@code jdbc:sqlite:} URL with no query string.
+     */
+    static String buildSqliteJdbcUrl(Path dbFile) {
+        return "jdbc:sqlite:" + dbFile.toAbsolutePath();
     }
 
     private static String buildCookieQuery(int patternCount) {
