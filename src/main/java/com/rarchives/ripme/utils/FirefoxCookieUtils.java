@@ -129,6 +129,10 @@ public final class FirefoxCookieUtils {
 
     /**
      * Reads cookies from the specified Firefox profile.
+     * <p>
+     * Copies {@code cookies.sqlite} plus WAL/SHM sidecars when present. While Firefox is open,
+     * recent cookies (including HttpOnly {@code sessionid}) often live only in the WAL; copying
+     * the main DB alone yields a stale snapshot missing the login session.
      *
      * @param profilePath       The Firefox profile directory.
      * @param hostLikePatterns  SQL LIKE patterns that should match cookie hosts.
@@ -147,13 +151,33 @@ public final class FirefoxCookieUtils {
         }
 
         Path tempCopy = null;
+        Path tempWal = null;
+        Path tempShm = null;
         try {
             tempCopy = Files.createTempFile("ripme-firefox-cookies", ".sqlite");
             tempCopy.toFile().deleteOnExit();
             Files.copy(sqlitePath, tempCopy, StandardCopyOption.REPLACE_EXISTING);
 
+            // Keep WAL/SHM next to the temp DB so SQLite can replay uncheckpointed cookies.
+            Path walPath = profilePath.resolve("cookies.sqlite-wal");
+            Path shmPath = profilePath.resolve("cookies.sqlite-shm");
+            tempWal = Paths.get(tempCopy.toString() + "-wal");
+            tempShm = Paths.get(tempCopy.toString() + "-shm");
+            if (Files.exists(walPath)) {
+                Files.copy(walPath, tempWal, StandardCopyOption.REPLACE_EXISTING);
+                tempWal.toFile().deleteOnExit();
+                logger.debug("Copied Firefox cookie WAL for profile {}", profilePath.getFileName());
+            }
+            if (Files.exists(shmPath)) {
+                Files.copy(shmPath, tempShm, StandardCopyOption.REPLACE_EXISTING);
+                tempShm.toFile().deleteOnExit();
+            }
+
             String sql = buildCookieQuery(hostLikePatterns.size());
-            try (Connection conn = DriverManager.getConnection("jdbc:sqlite:" + tempCopy);
+            // Forward slashes keep jdbc query params valid on Windows; mode=ro avoids write locks.
+            String dbPath = tempCopy.toAbsolutePath().toString().replace('\\', '/');
+            String jdbcUrl = "jdbc:sqlite:" + dbPath + "?mode=ro";
+            try (Connection conn = DriverManager.getConnection(jdbcUrl);
                     PreparedStatement stmt = conn.prepareStatement(sql)) {
                 for (int i = 0; i < hostLikePatterns.size(); i++) {
                     stmt.setString(i + 1, hostLikePatterns.get(i));
@@ -167,23 +191,33 @@ public final class FirefoxCookieUtils {
                             continue;
                         }
                         // Query orders by lastAccessed DESC; keep the newest value per name.
+                        // HttpOnly cookies (e.g. sessionid) are stored in moz_cookies.value and are included.
                         cookies.putIfAbsent(name, value);
                     }
                 }
             }
         } catch (SQLException | IOException e) {
-            logger.debug("Unable to read Firefox cookies from profile {}", profilePath, e);
+            logger.warn("Unable to read Firefox cookies from profile {} (is Firefox fully quit?): {}",
+                    profilePath.getFileName(), e.getMessage());
+            logger.debug("Firefox cookie read failure details for {}", profilePath, e);
         } finally {
-            if (tempCopy != null) {
-                try {
-                    Files.deleteIfExists(tempCopy);
-                } catch (IOException e) {
-                    logger.debug("Failed to delete temporary Firefox cookie copy", e);
-                }
-            }
+            deleteQuietly(tempCopy);
+            deleteQuietly(tempWal);
+            deleteQuietly(tempShm);
         }
 
         return cookies;
+    }
+
+    private static void deleteQuietly(Path path) {
+        if (path == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException e) {
+            logger.debug("Failed to delete temporary Firefox cookie file {}", path, e);
+        }
     }
 
     private static String buildCookieQuery(int patternCount) {

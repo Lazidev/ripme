@@ -60,4 +60,27 @@ public class InstagramRipperParseTest {
         String html = "window.__initialData = {\"logging_page_id\":\"profilePage_787132\"};";
         assertEquals("787132", ripper.parseUserIdFromProfileHtml(html, "natgeo"));
     }
+
+    @Test
+    void normalizeGraphqlTimelineThrowsOnNullUser() throws Exception {
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/"));
+        JSONObject json = new JSONObject("{\"data\":{\"user\":null}}");
+        IOException ex = assertThrows(IOException.class,
+                () -> ripper.normalizeGraphqlTimeline(json, false));
+        String message = ex.getMessage().toLowerCase();
+        assertTrue(message.contains("empty user data") || message.contains("sessionid"),
+                ex.getMessage());
+        assertTrue(message.contains("firefox") || message.contains("sessionid"),
+                ex.getMessage());
+    }
+
+    @Test
+    void normalizeGraphqlTimelinePassesThroughClassicTimeline() throws Exception {
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/"));
+        JSONObject json = new JSONObject(
+                "{\"data\":{\"user\":{\"edge_owner_to_timeline_media\":{\"edges\":[],\"page_info\":{\"has_next_page\":false}}}}}");
+        JSONObject normalized = ripper.normalizeGraphqlTimeline(json, false);
+        assertTrue(normalized.getJSONObject("data").getJSONObject("user")
+                .has("edge_owner_to_timeline_media"));
+    }
 }

@@ -274,8 +274,16 @@ public class InstagramRipper extends AbstractJSONRipper {
             logger.warn("web_profile_info first page failed for {}: {}", username, e.getMessage());
         }
 
-        // Anonymous / last-resort GraphQL (logged-out doc_id) when web_profile_info is blocked.
+        // Without sessionid, GraphQL usually returns {"user": null} after a 429/block —
+        // fail fast with actionable guidance instead of crashing later.
         if (!hasCookie("sessionid")) {
+            if (looksLikeRateLimitOrBlock(lastFailure)) {
+                throw loginRequiredException(
+                        "Could not load Instagram profile '" + username + "' "
+                                + "(web_profile_info blocked/429 and no sessionid cookie). "
+                                + "Instagram returned empty user data — log into Firefox and fully quit "
+                                + "so sessionid is available.");
+            }
             try {
                 JSONObject graphqlPage = fetchGraphqlTimelinePage(username, null);
                 validateTimelineResponse(graphqlPage, username);
@@ -286,8 +294,8 @@ public class InstagramRipper extends AbstractJSONRipper {
             }
             throw loginRequiredException(
                     "Could not load Instagram profile '" + username + "'. "
-                            + "Log into Instagram in Firefox (so a sessionid cookie exists), "
-                            + "fully quit Firefox, then retry. "
+                            + "Instagram returned empty user data — log into Firefox and fully quit "
+                            + "so sessionid is available. "
                             + "Or set cookies.instagram.com in ripme.json with sessionid=...; csrftoken=...");
         }
         throw new IOException("Failed to get Instagram media for '" + username + "'. "
@@ -296,10 +304,17 @@ public class InstagramRipper extends AbstractJSONRipper {
     }
 
     private void validateTimelineResponse(JSONObject json, String username) throws IOException {
-        if (json == null || !json.has("data") || !json.getJSONObject("data").has("user")) {
+        if (json == null) {
             throw new IOException("Failed to get user data from Instagram for " + username + ".");
         }
-        JSONObject user = json.getJSONObject("data").getJSONObject("user");
+        JSONObject data = json.optJSONObject("data");
+        if (data == null) {
+            throw new IOException("Failed to get user data from Instagram for " + username + ".");
+        }
+        JSONObject user = data.optJSONObject("user");
+        if (user == null) {
+            throw loginRequiredException("Instagram returned empty user data for '" + username + "'.");
+        }
         if (!user.has("edge_owner_to_timeline_media")) {
             if (user.optBoolean("is_private", false) && !hasCookie("sessionid")) {
                 throw loginRequiredException("Profile '" + username + "' is private.");
@@ -307,6 +322,18 @@ public class InstagramRipper extends AbstractJSONRipper {
             throw new IOException("No media data found for user '" + username
                     + "'. The account may be private, blocked, or have no posts.");
         }
+    }
+
+    private boolean looksLikeRateLimitOrBlock(IOException e) {
+        if (e == null || e.getMessage() == null) {
+            return false;
+        }
+        String message = e.getMessage().toLowerCase(Locale.ROOT);
+        return message.contains("429")
+                || message.contains("rate limit")
+                || message.contains("login")
+                || message.contains("html instead of json")
+                || message.contains("checkpoint");
     }
 
     private IOException loginRequiredException(String detail) {
@@ -1167,8 +1194,14 @@ public class InstagramRipper extends AbstractJSONRipper {
         logger.info("Instagram cookie check: sessionid={} csrftoken={} ds_user_id={} ({} cookies total)",
                 hasCookie("sessionid"), hasCookie("csrftoken"), hasCookie("ds_user_id"), cookies.size());
         if (!hasCookie("sessionid")) {
-            logger.warn("No sessionid cookie found. Log into Instagram in Firefox and fully quit the browser "
-                    + "before ripping (especially private profiles / batch rips).");
+            if (hasCookie("ds_user_id") || hasCookie("csrftoken")) {
+                logger.warn("Found Instagram cookies without sessionid (stale/incomplete session, or "
+                        + "Firefox still open so cookies.sqlite-wal was not flushed). "
+                        + "Log into Instagram in Firefox and fully quit the browser, then retry.");
+            } else {
+                logger.warn("No sessionid cookie found. Log into Instagram in Firefox and fully quit the browser "
+                        + "before ripping (especially private profiles / batch rips).");
+            }
         }
         if (!hasCookie("csrftoken")) {
             logger.warn("No csrftoken cookie found. Open instagram.com in Firefox once to refresh cookies.");
@@ -1382,15 +1415,28 @@ public class InstagramRipper extends AbstractJSONRipper {
         return normalizeGraphqlTimeline(json, loggedIn);
     }
 
-    private JSONObject normalizeGraphqlTimeline(JSONObject json, boolean loggedIn) throws IOException {
+    /**
+     * Normalizes a GraphQL timeline payload into the
+     * {@code data.user.edge_owner_to_timeline_media} shape used by {@link #getURLsFromJSON}.
+     * Package-private for unit tests.
+     */
+    JSONObject normalizeGraphqlTimeline(JSONObject json, boolean loggedIn) throws IOException {
         JSONObject data = json.optJSONObject("data");
         if (data == null) {
             throw new IOException("GraphQL timeline response missing data object");
         }
 
-        if (!loggedIn && data.has("user")) {
-            JSONObject user = data.getJSONObject("user");
-            if (user.has("edge_owner_to_timeline_media")) {
+        // Login walls / blocked anonymous queries often return {"data":{"user":null}}.
+        // optJSONObject returns null for JSON null; has("user") is still true.
+        JSONObject userNode = data.optJSONObject("user");
+        if (data.has("user") && userNode == null) {
+            throw new IOException("Instagram returned empty user data — log into Firefox and fully quit "
+                    + "so sessionid is available. GraphQL timeline had null user"
+                    + (loggedIn ? " despite sessionid." : " (no sessionid cookie)."));
+        }
+
+        if (!loggedIn && userNode != null) {
+            if (userNode.has("edge_owner_to_timeline_media")) {
                 JSONObject result = new JSONObject();
                 result.put("data", data);
                 return result;
@@ -1400,7 +1446,7 @@ public class InstagramRipper extends AbstractJSONRipper {
         JSONObject connection = data.optJSONObject("xdt_api__v1__feed__user_timeline_graphql_connection");
         if (connection == null) {
             // Some logged-out responses still nest under user even when we used the feed doc_id.
-            if (data.has("user") && data.getJSONObject("user").has("edge_owner_to_timeline_media")) {
+            if (userNode != null && userNode.has("edge_owner_to_timeline_media")) {
                 JSONObject result = new JSONObject();
                 result.put("data", data);
                 return result;
