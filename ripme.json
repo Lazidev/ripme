@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.294-1-5ba6cb8",
-  "currentHash": "c17ec94c3da51068fea07bd9533b0ca21932863a54cff0946550da8678e9260b",
+  "latestVersion": "2.1.295-1-3089548",
+  "currentHash": "565f818ce4e78d760a3e8eb3e139818ea9fca5f6d66005c81d98f03a9405bb17",
   "changeList": [
+    "2.1.295-1-3089548: PR #143 - Handle Instagram null user and Firefox session cookie WAL (https://github.com/Lazidev/ripme/pull/143) — ## Summary - Fail fast with clear guidance when GraphQL returns `{\"user\": null}` or web_profile_info is blocked without a `sessionid`",
+    "2.1.295-1-3089548: Built at 2026-08-02T04:28:56Z",
     "2.1.294-1-5ba6cb8: Keep failed rips in history with a Failed status column.",
     "2.1.294-1-5ba6cb8: Built at 2026-08-01T23:24:47Z",
     "2.1.293-1-238a3aa: Fall back to GraphQL for Instagram first page when feed is blocked.",
