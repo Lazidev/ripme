@@ -2272,8 +2272,13 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             try (BufferedReader br = new BufferedReader(new FileReader(chosenPath))) {
                 for (String line = br.readLine(); line != null; line = br.readLine()) {
                     line = line.trim();
-                    if (line.startsWith("http")) {
-                        MainWindow.addUrlToQueue(line);
+                    if (line.isEmpty() || line.startsWith("#") || line.startsWith("//")) {
+                        continue;
+                    }
+                    // Accept plain URLs and queue config lines (e.g. max=95|https://..., force|https://...).
+                    QueueEntry entry = QueueEntry.fromConfigString(line);
+                    if (entry != null && entry.getUrl() != null && entry.getUrl().startsWith("http")) {
+                        MainWindow.addUrlToQueue(entry.getUrl(), entry.isForceRip(), entry.getMaxDownloads());
                     } else {
                         LOGGER.error("Skipping url " + line + " because it looks malformed (doesn't start with http)");
                     }
