@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.296-1-53e0716",
-  "currentHash": "50d3704a3dd45f22f90aa9780bc45f9220ac7324259b26b2ac2d7b271aaf41f0",
+  "latestVersion": "2.1.297-1-d0cb9bb",
+  "currentHash": "899715eeaa6c010156ce39796e521a854763cd1e797af9ac5b67844b534d4115",
   "changeList": [
+    "2.1.297-1-d0cb9bb: Merge branch 'main' of https://github.com/Lazidev/ripme",
+    "2.1.297-1-d0cb9bb: Built at 2026-08-04T16:52:19Z",
     "2.1.296-1-53e0716: Fix Firefox cookie SQLite JDBC URL on Windows.",
     "2.1.296-1-53e0716: Built at 2026-08-02T04:41:09Z",
     "2.1.295-1-3089548: PR #143 - Handle Instagram null user and Firefox session cookie WAL (https://github.com/Lazidev/ripme/pull/143) — ## Summary - Fail fast with clear guidance when GraphQL returns `{\"user\": null}` or web_profile_info is blocked without a `sessionid`",
