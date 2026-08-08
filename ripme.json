@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.297-1-d0cb9bb",
-  "currentHash": "899715eeaa6c010156ce39796e521a854763cd1e797af9ac5b67844b534d4115",
+  "latestVersion": "2.1.298-1-48fba3b",
+  "currentHash": "8febd3f6d8092969037f5a8097e84da5371253d935d07120424ee060698b0f23",
   "changeList": [
+    "2.1.298-1-48fba3b: Add elitebabes.com ripper with listing queue support.",
+    "2.1.298-1-48fba3b: Built at 2026-08-08T08:22:44Z",
     "2.1.297-1-d0cb9bb: Merge branch 'main' of https://github.com/Lazidev/ripme",
     "2.1.297-1-d0cb9bb: Built at 2026-08-04T16:52:19Z",
     "2.1.296-1-53e0716: Fix Firefox cookie SQLite JDBC URL on Windows.",
