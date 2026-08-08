@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.298-1-48fba3b",
-  "currentHash": "8febd3f6d8092969037f5a8097e84da5371253d935d07120424ee060698b0f23",
+  "latestVersion": "2.1.299-1-fdd5bbf",
+  "currentHash": "37187cee69d040c7e1e27ae2f28449b464da849ebdbf5bcefa34e08a52f3be50",
   "changeList": [
+    "2.1.299-1-fdd5bbf: Rip elitebabes listings into a single folder.",
+    "2.1.299-1-fdd5bbf: Built at 2026-08-08T08:53:02Z",
     "2.1.298-1-48fba3b: Add elitebabes.com ripper with listing queue support.",
     "2.1.298-1-48fba3b: Built at 2026-08-08T08:22:44Z",
     "2.1.297-1-d0cb9bb: Merge branch 'main' of https://github.com/Lazidev/ripme",
