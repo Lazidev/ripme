@@ -144,7 +144,9 @@ public abstract class AbstractHTMLRipper extends AbstractRipper {
 
         List<String> doclocation = new ArrayList<>();
 
-        logger.info("Got doc location " + doc.location());
+        if (doc != null) {
+            logger.info("Got doc location " + doc.location());
+        }
 
         while (doc != null) {
             waitIfPaused();
