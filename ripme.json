@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.299-1-fdd5bbf",
-  "currentHash": "37187cee69d040c7e1e27ae2f28449b464da849ebdbf5bcefa34e08a52f3be50",
+  "latestVersion": "2.1.300-1-4ac4710",
+  "currentHash": "a901f6773ae972af9443a83eb87a35456a7daeb1aaf83bcb890bf445b6197cfd",
   "changeList": [
+    "2.1.300-1-4ac4710: Add design notes on HAR-assisted ripper authoring.",
+    "2.1.300-1-4ac4710: Built at 2026-08-08T12:04:43Z",
     "2.1.299-1-fdd5bbf: Rip elitebabes listings into a single folder.",
     "2.1.299-1-fdd5bbf: Built at 2026-08-08T08:53:02Z",
     "2.1.298-1-48fba3b: Add elitebabes.com ripper with listing queue support.",
