@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.301-1-06d5ebd",
-  "currentHash": "f7781468b5433a87de9a1ad0dee45326ee416f63f9148adab4726b8a3c3d6cfe",
+  "latestVersion": "2.1.302-1-6b354ec",
+  "currentHash": "34d3f6df0f74018d3a4dff5f2b709ff2f6c60e475c57120a1ec67e0da2595e00",
   "changeList": [
+    "2.1.302-1-6b354ec: PR #144 - Improve rip failure resilience and per-domain rate-limit throttling. (https://github.com/Lazidev/ripme/pull/144) — Partially successful rips now record their download counts instead of failing as 0, transient errors are retried, and rate limits throttle only the affected domain with automatic recovery. # Category",
+    "2.1.302-1-6b354ec: Built at 2026-08-20T01:08:35Z",
     "2.1.301-1-06d5ebd: Merge branch 'main' of https://github.com/Lazidev/ripme",
     "2.1.301-1-06d5ebd: Built at 2026-08-20T01:04:29Z",
     "2.1.300-1-4ac4710: Add design notes on HAR-assisted ripper authoring.",
