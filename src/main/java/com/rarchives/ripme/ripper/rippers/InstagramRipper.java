@@ -63,6 +63,12 @@ public class InstagramRipper extends AbstractJSONRipper {
      */
     private static final String GRAPHQL_DOC_ID_KEYWORD_SEARCH = "37324993597144881";
     private static final String GRAPHQL_FRIENDLY_NAME_KEYWORD_SEARCH = "PolarisKeywordSearchExplorePageRelayQuery";
+    /** Comet/web GraphQL uses Facebook's ASBD id, not the older Instagram i.instagram.com value. */
+    private static final String INSTAGRAM_GRAPHQL_ASBD_ID = "359341";
+    private static final Pattern LSD_PATTERN = Pattern.compile("\"LSD\",\\[\\],\\{\"token\":\"([^\"]+)\"");
+    private static final Pattern DTSG_PATTERN = Pattern.compile("\"DTSGInitialData\",\\[\\],\\{\"token\":\"([^\"]+)\"");
+    private static final Pattern ACTOR_ID_PATTERN = Pattern.compile("\"actorID\":\"(\\d+)\"");
+    private static final Pattern CLIENT_REVISION_PATTERN = Pattern.compile("\"client_revision\":(\\d+)");
     private String csrftoken = null;
     
     static {
@@ -79,6 +85,7 @@ public class InstagramRipper extends AbstractJSONRipper {
     private boolean hasNextPage = true;
     private String endCursor = null;
     private String popularSearchSessionId = null;
+    private InstagramGraphqlTokens keywordSearchTokens = null;
     private final int maxDownloads = Utils.getConfigInteger("maxdownloads", -1);
     private final DownloadLimitTracker downloadLimitTracker = new DownloadLimitTracker(maxDownloads);
     private volatile boolean maxDownloadLimitReached = false;
@@ -253,6 +260,9 @@ public class InstagramRipper extends AbstractJSONRipper {
             String keyword = getPopularKeyword(url);
             logger.info("Ripping Instagram popular search: {}", keyword);
             extractFirefoxCookies();
+            if (!hasCookie("sessionid")) {
+                throw loginRequiredException("Instagram popular search requires a logged-in session.");
+            }
             JSONObject timeline = convertKeywordSearchToTimeline(fetchKeywordSearchPage(keyword, null));
             JSONArray edges = timeline.getJSONObject("data")
                     .getJSONObject("user")
@@ -463,6 +473,9 @@ public class InstagramRipper extends AbstractJSONRipper {
         }
 
         String trimmed = body.trim();
+        if (trimmed.startsWith("for (;;);")) {
+            trimmed = trimmed.substring("for (;;);".length()).trim();
+        }
         if (trimmed.startsWith("{")) {
             try {
                 JSONObject json = new JSONObject(trimmed);
@@ -507,7 +520,8 @@ public class InstagramRipper extends AbstractJSONRipper {
 
         throw new IOException("Instagram returned HTML instead of JSON while " + actionDescription
                 + ". This usually means the session expired, cookies are missing sessionid, "
-                + "or Instagram is blocking the request. Log into Instagram in Firefox, quit Firefox, and retry.");
+                + "or Instagram is blocking the request. Log into Instagram in Firefox, quit Firefox, and retry."
+                + " Response starts: " + summarizeBody(body));
     }
 
     /**
@@ -1406,8 +1420,11 @@ public class InstagramRipper extends AbstractJSONRipper {
     /**
      * Fetches one page of {@code /popular/{query}} results via
      * {@code PolarisKeywordSearchExplorePageRelayQuery}.
+     * Instagram's {@code /api/graphql} endpoint requires {@code lsd} + {@code fb_dtsg}
+     * from the search HTML; posting without them returns the HTML page instead of JSON.
      */
     private JSONObject fetchKeywordSearchPage(String keyword, String afterCursor) throws IOException {
+        ensureKeywordSearchTokens(keyword);
         if (popularSearchSessionId == null || popularSearchSessionId.isEmpty()) {
             popularSearchSessionId = UUID.randomUUID().toString();
         }
@@ -1420,28 +1437,24 @@ public class InstagramRipper extends AbstractJSONRipper {
             variables.put("cursor", afterCursor);
         }
 
-        Map<String, String> form = new HashMap<>();
-        form.put("variables", variables.toString());
-        form.put("doc_id", GRAPHQL_DOC_ID_KEYWORD_SEARCH);
-        form.put("server_timestamps", "true");
-        form.put("fb_api_req_friendly_name", GRAPHQL_FRIENDLY_NAME_KEYWORD_SEARCH);
-
+        Map<String, String> form = buildKeywordSearchForm(keywordSearchTokens, variables.toString());
         String requestUrl = "https://www.instagram.com/api/graphql";
         String referer = "https://www.instagram.com/popular/" + URLEncoder.encode(keyword, StandardCharsets.UTF_8) + "/";
         logger.debug("Fetching Instagram keyword search doc_id={} query={} after={}",
                 GRAPHQL_DOC_ID_KEYWORD_SEARCH, keyword, afterCursor);
 
         Http request = Http.url(requestUrl)
+                .timeout(TIMEOUT)
                 .method(Method.POST)
                 .data(form)
                 .userAgent(INSTAGRAM_USER_AGENT)
                 .header("Accept", "*/*")
                 .header("Accept-Language", "en-US,en;q=0.9")
                 .header("X-IG-App-ID", INSTAGRAM_APP_ID)
-                .header("X-Requested-With", "XMLHttpRequest")
                 .header("X-CSRFToken", cookies.getOrDefault("csrftoken", ""))
-                .header("X-FB-LSD", cookies.getOrDefault("lsd", ""))
+                .header("X-FB-LSD", keywordSearchTokens.lsd)
                 .header("X-FB-Friendly-Name", GRAPHQL_FRIENDLY_NAME_KEYWORD_SEARCH)
+                .header("X-ASBD-ID", INSTAGRAM_GRAPHQL_ASBD_ID)
                 .header("Origin", "https://www.instagram.com")
                 .header("Referer", referer)
                 .header("Sec-Fetch-Dest", "empty")
@@ -1455,14 +1468,145 @@ public class InstagramRipper extends AbstractJSONRipper {
 
         int statusCode = response.statusCode();
         String body = response.body();
+        logger.debug("Instagram keyword search {} -> status {} (len={})",
+                requestUrl, statusCode, body != null ? body.length() : 0);
         if (statusCode == 429) {
             throw new IOException("Rate limited by Instagram keyword search.");
         }
         if (statusCode != 200) {
-            throw new IOException("Keyword search HTTP " + statusCode + " for '" + keyword + "'");
+            throw new IOException("Keyword search HTTP " + statusCode + " for '" + keyword
+                    + "'. Response starts: " + summarizeBody(body));
         }
 
         return parseInstagramJsonBody(body, "keyword search for " + keyword);
+    }
+
+    /**
+     * Loads {@code lsd}/{@code fb_dtsg}/actor id from the {@code /popular/{query}} HTML.
+     * Those tokens are not stored in Firefox cookies.
+     */
+    private void ensureKeywordSearchTokens(String keyword) throws IOException {
+        if (keywordSearchTokens != null
+                && keywordSearchTokens.lsd != null && !keywordSearchTokens.lsd.isEmpty()
+                && keywordSearchTokens.fbDtsg != null && !keywordSearchTokens.fbDtsg.isEmpty()) {
+            return;
+        }
+
+        String pageUrl = "https://www.instagram.com/popular/"
+                + URLEncoder.encode(keyword, StandardCharsets.UTF_8) + "/";
+        logger.info("Loading Instagram popular page for GraphQL tokens: {}", pageUrl);
+        Response response = Http.url(pageUrl)
+                .timeout(TIMEOUT)
+                .userAgent(INSTAGRAM_USER_AGENT)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .header("Referer", "https://www.instagram.com/")
+                .header("Sec-Fetch-Dest", "document")
+                .header("Sec-Fetch-Mode", "navigate")
+                .header("Sec-Fetch-Site", "same-origin")
+                .header("Upgrade-Insecure-Requests", "1")
+                .cookies(cookies)
+                .ignoreContentType()
+                .ignoreHttpErrors()
+                .response();
+
+        if (response.cookies() != null && !response.cookies().isEmpty()) {
+            cookies.putAll(response.cookies());
+            if (cookies.containsKey("csrftoken")) {
+                this.csrftoken = cookies.get("csrftoken");
+            }
+        }
+
+        if (response.statusCode() != 200) {
+            throw new IOException("Instagram popular page HTTP " + response.statusCode()
+                    + " for '" + keyword + "'");
+        }
+
+        String html = response.body();
+        if (html == null || html.isBlank()) {
+            throw new IOException("Empty Instagram popular page for '" + keyword + "'");
+        }
+
+        String lower = html.toLowerCase(Locale.ROOT);
+        if (lower.contains("/accounts/login")
+                || lower.contains("checkpoint_required")
+                || lower.contains("challenge_required")) {
+            throw loginRequiredException("Instagram returned a login/challenge page for popular search '"
+                    + keyword + "'.");
+        }
+
+        keywordSearchTokens = parseGraphqlTokens(html);
+        if (keywordSearchTokens.lsd == null || keywordSearchTokens.lsd.isEmpty()
+                || keywordSearchTokens.fbDtsg == null || keywordSearchTokens.fbDtsg.isEmpty()) {
+            throw new IOException("Could not extract Instagram GraphQL tokens (lsd/fb_dtsg) from popular page for '"
+                    + keyword + "'. Log into Instagram in Firefox, quit Firefox, and retry.");
+        }
+        if (keywordSearchTokens.actorId == null || keywordSearchTokens.actorId.isEmpty()) {
+            keywordSearchTokens.actorId = cookies.getOrDefault("ds_user_id", "0");
+        }
+        logger.info("Loaded Instagram GraphQL tokens for popular search (lsd=true dtsg=true actor={})",
+                keywordSearchTokens.actorId);
+    }
+
+    /** Package-private for unit tests. */
+    InstagramGraphqlTokens parseGraphqlTokens(String html) {
+        InstagramGraphqlTokens tokens = new InstagramGraphqlTokens();
+        tokens.lsd = firstMatch(html, LSD_PATTERN);
+        tokens.fbDtsg = firstMatch(html, DTSG_PATTERN);
+        tokens.actorId = firstMatch(html, ACTOR_ID_PATTERN);
+        tokens.clientRevision = firstMatch(html, CLIENT_REVISION_PATTERN);
+        return tokens;
+    }
+
+    /** Package-private for unit tests. */
+    Map<String, String> buildKeywordSearchForm(InstagramGraphqlTokens tokens, String variables) {
+        Map<String, String> form = new LinkedHashMap<>();
+        form.put("av", tokens.actorId != null ? tokens.actorId : "0");
+        form.put("__d", "www");
+        form.put("__user", "0");
+        form.put("__a", "1");
+        form.put("__comet_req", "7");
+        form.put("fb_dtsg", tokens.fbDtsg);
+        form.put("jazoest", computeJazoest(tokens.fbDtsg));
+        form.put("lsd", tokens.lsd);
+        form.put("dpr", "1");
+        form.put("fb_api_caller_class", "RelayModern");
+        form.put("fb_api_req_friendly_name", GRAPHQL_FRIENDLY_NAME_KEYWORD_SEARCH);
+        form.put("variables", variables);
+        form.put("server_timestamps", "true");
+        form.put("doc_id", GRAPHQL_DOC_ID_KEYWORD_SEARCH);
+        if (tokens.clientRevision != null && !tokens.clientRevision.isEmpty()) {
+            form.put("__rev", tokens.clientRevision);
+        }
+        return form;
+    }
+
+    /**
+     * jazoest is a checksum Instagram/Facebook expect alongside fb_dtsg: the literal "2"
+     * concatenated with the sum of the UTF-16 code units of the token.
+     */
+    static String computeJazoest(String fbDtsg) {
+        long sum = 0;
+        for (int i = 0; i < fbDtsg.length(); i++) {
+            sum += fbDtsg.charAt(i);
+        }
+        return "2" + sum;
+    }
+
+    private static String firstMatch(String text, Pattern pattern) {
+        if (text == null) {
+            return null;
+        }
+        Matcher matcher = pattern.matcher(text);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    /** Tokens scraped from Instagram HTML for Comet GraphQL. Package-private for tests. */
+    static final class InstagramGraphqlTokens {
+        String lsd;
+        String fbDtsg;
+        String actorId;
+        String clientRevision;
     }
 
     /**
