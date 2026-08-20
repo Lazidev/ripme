@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
+import java.net.URLDecoder;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -56,6 +57,12 @@ public class InstagramRipper extends AbstractJSONRipper {
      * {@code xdt_api__v1__feed__user_timeline_graphql_connection} with private-API media nodes).
      */
     private static final String GRAPHQL_DOC_ID_FEED_TIMELINE = "7898261790222653";
+    /**
+     * Keyword search explore page ({@code /popular/{query}}), used by
+     * {@code PolarisKeywordSearchExplorePageRelayQuery}.
+     */
+    private static final String GRAPHQL_DOC_ID_KEYWORD_SEARCH = "37324993597144881";
+    private static final String GRAPHQL_FRIENDLY_NAME_KEYWORD_SEARCH = "PolarisKeywordSearchExplorePageRelayQuery";
     private String csrftoken = null;
     
     static {
@@ -71,6 +78,7 @@ public class InstagramRipper extends AbstractJSONRipper {
     private Map<String, String> cookies = new HashMap<>();
     private boolean hasNextPage = true;
     private String endCursor = null;
+    private String popularSearchSessionId = null;
     private final int maxDownloads = Utils.getConfigInteger("maxdownloads", -1);
     private final DownloadLimitTracker downloadLimitTracker = new DownloadLimitTracker(maxDownloads);
     private volatile boolean maxDownloadLimitReached = false;
@@ -96,6 +104,9 @@ public class InstagramRipper extends AbstractJSONRipper {
 
     @Override
     public String getGID(URL url) throws MalformedURLException {
+        if (isPopularUrl(url)) {
+            return getPopularKeyword(url);
+        }
         // Reels rip into the same album folder as the profile's posts.
         return getUsername(url);
     }
@@ -108,6 +119,25 @@ public class InstagramRipper extends AbstractJSONRipper {
             return matcher.group("username");
         }
         throw new MalformedURLException("Expected format: https://www.instagram.com/username/");
+    }
+
+    /**
+     * True when the URL is Instagram's keyword search page
+     * ({@code /popular/{query}}), not a user named {@code popular}.
+     */
+    boolean isPopularUrl(URL url) {
+        return url.toExternalForm()
+                .matches("(?i)https?://(?:www\\.)?instagram\\.com/popular/[^/?#]+/?([?#].*)?");
+    }
+
+    /** Keyword from {@code /popular/{query}}, used as the album folder name. */
+    String getPopularKeyword(URL url) throws MalformedURLException {
+        Pattern pattern = Pattern.compile("(?i)https?://(?:www\\.)?instagram\\.com/popular/(?<keyword>[^/?#]+)");
+        Matcher matcher = pattern.matcher(url.toExternalForm());
+        if (matcher.find()) {
+            return URLDecoder.decode(matcher.group("keyword"), StandardCharsets.UTF_8);
+        }
+        throw new MalformedURLException("Expected format: https://www.instagram.com/popular/keyword/");
     }
 
     /** True when the URL points at a profile's reels tab (e.g. {@code /username/reels/}). */
@@ -219,6 +249,21 @@ public class InstagramRipper extends AbstractJSONRipper {
         }
     }    @Override
     protected JSONObject getFirstPage() throws IOException {
+        if (isPopularUrl(url)) {
+            String keyword = getPopularKeyword(url);
+            logger.info("Ripping Instagram popular search: {}", keyword);
+            extractFirefoxCookies();
+            JSONObject timeline = convertKeywordSearchToTimeline(fetchKeywordSearchPage(keyword, null));
+            JSONArray edges = timeline.getJSONObject("data")
+                    .getJSONObject("user")
+                    .getJSONObject("edge_owner_to_timeline_media")
+                    .optJSONArray("edges");
+            if (edges == null || edges.length() == 0) {
+                throw new IOException("No images found in Instagram popular search for '" + keyword + "'.");
+            }
+            return timeline;
+        }
+
         String username = getUsername(url);
         boolean reels = isReelsUrl(url);
         logger.info("Ripping Instagram {}: {}", reels ? "reels" : "profile", username);
@@ -1316,6 +1361,19 @@ public class InstagramRipper extends AbstractJSONRipper {
             return null;
         }
 
+        if (isPopularUrl(url)) {
+            try {
+                return convertKeywordSearchToTimeline(fetchKeywordSearchPage(getPopularKeyword(url), endCursor));
+            } catch (IOException e) {
+                logger.warn("Instagram popular search pagination stopped for {}: {}",
+                        getPopularKeyword(url), e.getMessage());
+                sendUpdate(RipStatusMessage.STATUS.DOWNLOAD_WARN,
+                        "Instagram popular search pagination stopped: " + e.getMessage());
+                hasNextPage = false;
+                return null;
+            }
+        }
+
         String username = getUsername(url);
         if (isReelsUrl(url)) {
             return getClipsUserPage(username, endCursor);
@@ -1343,6 +1401,133 @@ public class InstagramRipper extends AbstractJSONRipper {
                     "Instagram pagination stopped: " + e.getMessage());
             throw e;
         }
+    }
+
+    /**
+     * Fetches one page of {@code /popular/{query}} results via
+     * {@code PolarisKeywordSearchExplorePageRelayQuery}.
+     */
+    private JSONObject fetchKeywordSearchPage(String keyword, String afterCursor) throws IOException {
+        if (popularSearchSessionId == null || popularSearchSessionId.isEmpty()) {
+            popularSearchSessionId = UUID.randomUUID().toString();
+        }
+
+        JSONObject variables = new JSONObject();
+        variables.put("query", keyword);
+        variables.put("search_session_id", popularSearchSessionId);
+        variables.put("serp_session_id", popularSearchSessionId);
+        if (afterCursor != null && !afterCursor.isEmpty()) {
+            variables.put("cursor", afterCursor);
+        }
+
+        Map<String, String> form = new HashMap<>();
+        form.put("variables", variables.toString());
+        form.put("doc_id", GRAPHQL_DOC_ID_KEYWORD_SEARCH);
+        form.put("server_timestamps", "true");
+        form.put("fb_api_req_friendly_name", GRAPHQL_FRIENDLY_NAME_KEYWORD_SEARCH);
+
+        String requestUrl = "https://www.instagram.com/api/graphql";
+        String referer = "https://www.instagram.com/popular/" + URLEncoder.encode(keyword, StandardCharsets.UTF_8) + "/";
+        logger.debug("Fetching Instagram keyword search doc_id={} query={} after={}",
+                GRAPHQL_DOC_ID_KEYWORD_SEARCH, keyword, afterCursor);
+
+        Http request = Http.url(requestUrl)
+                .method(Method.POST)
+                .data(form)
+                .userAgent(INSTAGRAM_USER_AGENT)
+                .header("Accept", "*/*")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .header("X-IG-App-ID", INSTAGRAM_APP_ID)
+                .header("X-Requested-With", "XMLHttpRequest")
+                .header("X-CSRFToken", cookies.getOrDefault("csrftoken", ""))
+                .header("X-FB-LSD", cookies.getOrDefault("lsd", ""))
+                .header("X-FB-Friendly-Name", GRAPHQL_FRIENDLY_NAME_KEYWORD_SEARCH)
+                .header("Origin", "https://www.instagram.com")
+                .header("Referer", referer)
+                .header("Sec-Fetch-Dest", "empty")
+                .header("Sec-Fetch-Mode", "cors")
+                .header("Sec-Fetch-Site", "same-origin")
+                .cookies(cookies)
+                .ignoreContentType()
+                .ignoreHttpErrors();
+        applyOptionalInstagramHeaders(request);
+        Response response = request.response();
+
+        int statusCode = response.statusCode();
+        String body = response.body();
+        if (statusCode == 429) {
+            throw new IOException("Rate limited by Instagram keyword search.");
+        }
+        if (statusCode != 200) {
+            throw new IOException("Keyword search HTTP " + statusCode + " for '" + keyword + "'");
+        }
+
+        return parseInstagramJsonBody(body, "keyword search for " + keyword);
+    }
+
+    /**
+     * Reshapes {@code xdt_fbsearch__top_serp_graphql} into the GraphQL timeline
+     * structure expected by {@link #getURLsFromJSON(JSONObject)}.
+     * Package-private for unit tests.
+     */
+    JSONObject convertKeywordSearchToTimeline(JSONObject json) throws IOException {
+        JSONObject data = json.optJSONObject("data");
+        if (data == null) {
+            throw new IOException("Keyword search response missing data object");
+        }
+        JSONObject serp = data.optJSONObject("xdt_fbsearch__top_serp_graphql");
+        if (serp == null) {
+            throw new IOException("Keyword search response missing xdt_fbsearch__top_serp_graphql");
+        }
+
+        JSONArray edgesOut = new JSONArray();
+        JSONArray edgesIn = serp.optJSONArray("edges");
+        if (edgesIn != null) {
+            for (int i = 0; i < edgesIn.length(); i++) {
+                JSONObject edge = edgesIn.optJSONObject(i);
+                if (edge == null) {
+                    continue;
+                }
+                JSONObject unit = edge.optJSONObject("node");
+                if (unit == null || !"XDTTopSerpMediaGridUnit".equals(unit.optString("__typename"))) {
+                    continue;
+                }
+                JSONArray items = unit.optJSONArray("items");
+                if (items == null) {
+                    continue;
+                }
+                for (int j = 0; j < items.length(); j++) {
+                    JSONObject media = items.optJSONObject(j);
+                    if (media == null) {
+                        continue;
+                    }
+                    JSONObject node = mediaToNode(media);
+                    if (node == null) {
+                        continue;
+                    }
+                    JSONObject outEdge = new JSONObject();
+                    outEdge.put("node", node);
+                    edgesOut.put(outEdge);
+                }
+            }
+        }
+
+        JSONObject pageInfo = serp.optJSONObject("page_info");
+        if (pageInfo == null) {
+            pageInfo = new JSONObject();
+            pageInfo.put("has_next_page", false);
+        }
+
+        JSONObject timelineMedia = new JSONObject();
+        timelineMedia.put("edges", edgesOut);
+        timelineMedia.put("page_info", pageInfo);
+        JSONObject user = new JSONObject();
+        user.put("edge_owner_to_timeline_media", timelineMedia);
+        JSONObject dataOut = new JSONObject();
+        dataOut.put("user", user);
+        JSONObject result = new JSONObject();
+        result.put("data", dataOut);
+        return result;
     }
 
     /**
