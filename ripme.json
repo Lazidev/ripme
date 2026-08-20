@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.303-1-01be5da",
-  "currentHash": "b538efc7d81da51156d35b44fab23778806d97ff4df2813468bafd9c3d54a44d",
+  "latestVersion": "2.1.304-1-c704447",
+  "currentHash": "4e168b081c424ef8fc1800071846ce25ebfd7238804119b5bf12a1a19a4a9247",
   "changeList": [
+    "2.1.304-1-c704447: PR #146 - Fix empty Instagram popular search by sending Relay first/after and f… (https://github.com/Lazidev/ripme/pull/146) — …alling back to fbsearch REST. # Category",
+    "2.1.304-1-c704447: Built at 2026-08-20T06:19:13Z",
     "2.1.303-1-01be5da: PR #145 - Fix Instagram popular search GraphQL by sending lsd and fb_dtsg from … (https://github.com/Lazidev/ripme/pull/145) — …page HTML. # Category",
     "2.1.303-1-01be5da: Built at 2026-08-20T01:22:19Z",
     "2.1.302-1-6b354ec: PR #144 - Improve rip failure resilience and per-domain rate-limit throttling. (https://github.com/Lazidev/ripme/pull/144) — Partially successful rips now record their download counts instead of failing as 0, transient errors are retried, and rate limits throttle only the affected domain with automatic recovery. # Category",
