@@ -63,12 +63,21 @@ public class InstagramRipper extends AbstractJSONRipper {
      */
     private static final String GRAPHQL_DOC_ID_KEYWORD_SEARCH = "37324993597144881";
     private static final String GRAPHQL_FRIENDLY_NAME_KEYWORD_SEARCH = "PolarisKeywordSearchExplorePageRelayQuery";
+    private static final int KEYWORD_SEARCH_PAGE_SIZE = 12;
     /** Comet/web GraphQL uses Facebook's ASBD id, not the older Instagram i.instagram.com value. */
     private static final String INSTAGRAM_GRAPHQL_ASBD_ID = "359341";
     private static final Pattern LSD_PATTERN = Pattern.compile("\"LSD\",\\[\\],\\{\"token\":\"([^\"]+)\"");
     private static final Pattern DTSG_PATTERN = Pattern.compile("\"DTSGInitialData\",\\[\\],\\{\"token\":\"([^\"]+)\"");
     private static final Pattern ACTOR_ID_PATTERN = Pattern.compile("\"actorID\":\"(\\d+)\"");
     private static final Pattern CLIENT_REVISION_PATTERN = Pattern.compile("\"client_revision\":(\\d+)");
+    private static final Pattern KEYWORD_SEARCH_DOC_ID_PATTERN = Pattern.compile(
+            "PolarisKeywordSearchExplorePageRelayQuery.{0,400}?\"id\"\\s*:\\s*\"(\\d{10,})\"",
+            Pattern.DOTALL);
+    private static final Pattern KEYWORD_SEARCH_DOC_ID_PATTERN_REV = Pattern.compile(
+            "\"id\"\\s*:\\s*\"(\\d{10,})\".{0,400}?PolarisKeywordSearchExplorePageRelayQuery",
+            Pattern.DOTALL);
+    private static final Pattern KEYWORD_SEARCH_QUERY_PATTERN = Pattern.compile(
+            "\"query\":\"([^\"]+)\",\"search_session_id\"");
     private String csrftoken = null;
     
     static {
@@ -86,6 +95,7 @@ public class InstagramRipper extends AbstractJSONRipper {
     private String endCursor = null;
     private String popularSearchSessionId = null;
     private InstagramGraphqlTokens keywordSearchTokens = null;
+    private boolean keywordSearchUseRest = false;
     private final int maxDownloads = Utils.getConfigInteger("maxdownloads", -1);
     private final DownloadLimitTracker downloadLimitTracker = new DownloadLimitTracker(maxDownloads);
     private volatile boolean maxDownloadLimitReached = false;
@@ -263,13 +273,15 @@ public class InstagramRipper extends AbstractJSONRipper {
             if (!hasCookie("sessionid")) {
                 throw loginRequiredException("Instagram popular search requires a logged-in session.");
             }
-            JSONObject timeline = convertKeywordSearchToTimeline(fetchKeywordSearchPage(keyword, null));
+            JSONObject raw = fetchKeywordSearchPage(keyword, null);
+            JSONObject timeline = convertKeywordSearchToTimeline(raw);
             JSONArray edges = timeline.getJSONObject("data")
                     .getJSONObject("user")
                     .getJSONObject("edge_owner_to_timeline_media")
                     .optJSONArray("edges");
             if (edges == null || edges.length() == 0) {
-                throw new IOException("No images found in Instagram popular search for '" + keyword + "'.");
+                throw new IOException("No images found in Instagram popular search for '" + keyword + "'. "
+                        + summarizeKeywordSearch(raw));
             }
             return timeline;
         }
@@ -1377,7 +1389,10 @@ public class InstagramRipper extends AbstractJSONRipper {
 
         if (isPopularUrl(url)) {
             try {
-                return convertKeywordSearchToTimeline(fetchKeywordSearchPage(getPopularKeyword(url), endCursor));
+                JSONObject raw = keywordSearchUseRest
+                        ? fetchKeywordSearchRestPage(getPopularKeyword(url), endCursor)
+                        : fetchKeywordSearchPage(getPopularKeyword(url), endCursor);
+                return convertKeywordSearchToTimeline(raw);
             } catch (IOException e) {
                 logger.warn("Instagram popular search pagination stopped for {}: {}",
                         getPopularKeyword(url), e.getMessage());
@@ -1422,6 +1437,8 @@ public class InstagramRipper extends AbstractJSONRipper {
      * {@code PolarisKeywordSearchExplorePageRelayQuery}.
      * Instagram's {@code /api/graphql} endpoint requires {@code lsd} + {@code fb_dtsg}
      * from the search HTML; posting without them returns the HTML page instead of JSON.
+     * Relay also expects connection args {@code first}/{@code after}; omitting them
+     * yields an empty SERP. Falls back to {@code /fbsearch/} REST when GraphQL is empty.
      */
     private JSONObject fetchKeywordSearchPage(String keyword, String afterCursor) throws IOException {
         ensureKeywordSearchTokens(keyword);
@@ -1429,19 +1446,50 @@ public class InstagramRipper extends AbstractJSONRipper {
             popularSearchSessionId = UUID.randomUUID().toString();
         }
 
-        JSONObject variables = new JSONObject();
-        variables.put("query", keyword);
-        variables.put("search_session_id", popularSearchSessionId);
-        variables.put("serp_session_id", popularSearchSessionId);
-        if (afterCursor != null && !afterCursor.isEmpty()) {
-            variables.put("cursor", afterCursor);
+        String query = keywordSearchQuery(keyword);
+        JSONObject variables = buildKeywordSearchVariables(query, afterCursor);
+        JSONObject bestGraphql = null;
+        for (String requestUrl : Arrays.asList(
+                "https://www.instagram.com/graphql/query",
+                "https://www.instagram.com/api/graphql")) {
+            try {
+                JSONObject json = postKeywordSearch(requestUrl, query, variables);
+                if (json != null) {
+                    bestGraphql = json;
+                    if (timelineHasMedia(convertKeywordSearchToTimeline(json))) {
+                        return json;
+                    }
+                    logger.info("Instagram keyword search via {} returned no media. {}",
+                            requestUrl, summarizeKeywordSearch(json));
+                }
+            } catch (IOException e) {
+                logger.warn("Instagram keyword search via {} failed: {}", requestUrl, e.getMessage());
+            }
         }
 
+        try {
+            JSONObject rest = fetchKeywordSearchRestPage(query, afterCursor);
+            if (rest != null && timelineHasMedia(convertKeywordSearchToTimeline(rest))) {
+                keywordSearchUseRest = true;
+                logger.info("Instagram popular search falling back to fbsearch REST for '{}'", query);
+                return rest;
+            }
+        } catch (IOException e) {
+            logger.warn("Instagram fbsearch REST fallback failed for {}: {}", query, e.getMessage());
+        }
+
+        if (bestGraphql != null) {
+            return bestGraphql;
+        }
+        throw new IOException("Keyword search failed for '" + query + "'");
+    }
+
+    private JSONObject postKeywordSearch(String requestUrl, String keyword, JSONObject variables)
+            throws IOException {
         Map<String, String> form = buildKeywordSearchForm(keywordSearchTokens, variables.toString());
-        String requestUrl = "https://www.instagram.com/api/graphql";
         String referer = "https://www.instagram.com/popular/" + URLEncoder.encode(keyword, StandardCharsets.UTF_8) + "/";
-        logger.debug("Fetching Instagram keyword search doc_id={} query={} after={}",
-                GRAPHQL_DOC_ID_KEYWORD_SEARCH, keyword, afterCursor);
+        logger.debug("Fetching Instagram keyword search {} doc_id={} query={}",
+                requestUrl, form.get("doc_id"), keyword);
 
         Http request = Http.url(requestUrl)
                 .timeout(TIMEOUT)
@@ -1479,6 +1527,73 @@ public class InstagramRipper extends AbstractJSONRipper {
         }
 
         return parseInstagramJsonBody(body, "keyword search for " + keyword);
+    }
+
+    JSONObject buildKeywordSearchVariables(String keyword, String afterCursor) {
+        if (popularSearchSessionId == null || popularSearchSessionId.isEmpty()) {
+            popularSearchSessionId = UUID.randomUUID().toString();
+        }
+        JSONObject variables = new JSONObject();
+        variables.put("query", keyword);
+        variables.put("search_session_id", popularSearchSessionId);
+        variables.put("serp_session_id", popularSearchSessionId);
+        variables.put("first", KEYWORD_SEARCH_PAGE_SIZE);
+        if (afterCursor != null && !afterCursor.isEmpty()) {
+            variables.put("after", afterCursor);
+            variables.put("cursor", afterCursor);
+        } else {
+            variables.put("after", JSONObject.NULL);
+        }
+        return variables;
+    }
+
+    private String keywordSearchQuery(String fallbackKeyword) {
+        if (keywordSearchTokens != null
+                && keywordSearchTokens.pageQuery != null
+                && !keywordSearchTokens.pageQuery.isEmpty()) {
+            return keywordSearchTokens.pageQuery;
+        }
+        return fallbackKeyword;
+    }
+
+    private JSONObject fetchKeywordSearchRestPage(String keyword, String afterCursor) throws IOException {
+        String encoded = URLEncoder.encode(keyword, StandardCharsets.UTF_8);
+        String referer = "https://www.instagram.com/popular/" + encoded + "/";
+        List<String> urls = new ArrayList<>();
+        String suffix = "&search_surface=top_serp&timezone_offset=0";
+        if (afterCursor != null && !afterCursor.isEmpty()) {
+            suffix += "&next_max_id=" + URLEncoder.encode(afterCursor, StandardCharsets.UTF_8);
+        }
+        urls.add("https://www.instagram.com/api/v1/fbsearch/web/top_serp/?query=" + encoded + suffix);
+        urls.add("https://www.instagram.com/api/v1/fbsearch/top_serp/?query=" + encoded + suffix);
+        urls.add("https://i.instagram.com/api/v1/fbsearch/top_serp/?query=" + encoded + suffix);
+
+        IOException last = null;
+        for (String requestUrl : urls) {
+            try {
+                Response response = executeInstagramApiRequest(requestUrl, referer,
+                        "fbsearch top_serp for " + keyword, true);
+                if (response.statusCode() == 429) {
+                    throw new IOException("Rate limited by Instagram fbsearch.");
+                }
+                if (response.statusCode() != 200) {
+                    last = new IOException("fbsearch HTTP " + response.statusCode() + " for " + requestUrl);
+                    continue;
+                }
+                JSONObject json = parseInstagramJsonBody(response.body(), "fbsearch for " + keyword);
+                if (timelineHasMedia(convertKeywordSearchToTimeline(json))) {
+                    return json;
+                }
+                last = new IOException("fbsearch returned no media from " + requestUrl);
+            } catch (IOException e) {
+                last = e;
+                logger.debug("Instagram fbsearch {} failed: {}", requestUrl, e.getMessage());
+            }
+        }
+        if (last != null) {
+            throw last;
+        }
+        throw new IOException("fbsearch failed for '" + keyword + "'");
     }
 
     /**
@@ -1544,6 +1659,14 @@ public class InstagramRipper extends AbstractJSONRipper {
         if (keywordSearchTokens.actorId == null || keywordSearchTokens.actorId.isEmpty()) {
             keywordSearchTokens.actorId = cookies.getOrDefault("ds_user_id", "0");
         }
+        if (keywordSearchTokens.docId != null && !keywordSearchTokens.docId.equals(GRAPHQL_DOC_ID_KEYWORD_SEARCH)) {
+            logger.info("Using Instagram keyword search doc_id from page HTML ({}) instead of {}",
+                    keywordSearchTokens.docId, GRAPHQL_DOC_ID_KEYWORD_SEARCH);
+        }
+        if (keywordSearchTokens.pageQuery != null && !keywordSearchTokens.pageQuery.equals(keyword)) {
+            logger.info("Instagram popular page query is '{}' (URL keyword was '{}')",
+                    keywordSearchTokens.pageQuery, keyword);
+        }
         logger.info("Loaded Instagram GraphQL tokens for popular search (lsd=true dtsg=true actor={})",
                 keywordSearchTokens.actorId);
     }
@@ -1555,6 +1678,11 @@ public class InstagramRipper extends AbstractJSONRipper {
         tokens.fbDtsg = firstMatch(html, DTSG_PATTERN);
         tokens.actorId = firstMatch(html, ACTOR_ID_PATTERN);
         tokens.clientRevision = firstMatch(html, CLIENT_REVISION_PATTERN);
+        tokens.docId = firstMatch(html, KEYWORD_SEARCH_DOC_ID_PATTERN);
+        if (tokens.docId == null) {
+            tokens.docId = firstMatch(html, KEYWORD_SEARCH_DOC_ID_PATTERN_REV);
+        }
+        tokens.pageQuery = firstMatch(html, KEYWORD_SEARCH_QUERY_PATTERN);
         return tokens;
     }
 
@@ -1574,7 +1702,8 @@ public class InstagramRipper extends AbstractJSONRipper {
         form.put("fb_api_req_friendly_name", GRAPHQL_FRIENDLY_NAME_KEYWORD_SEARCH);
         form.put("variables", variables);
         form.put("server_timestamps", "true");
-        form.put("doc_id", GRAPHQL_DOC_ID_KEYWORD_SEARCH);
+        form.put("doc_id", tokens.docId != null && !tokens.docId.isEmpty()
+                ? tokens.docId : GRAPHQL_DOC_ID_KEYWORD_SEARCH);
         if (tokens.clientRevision != null && !tokens.clientRevision.isEmpty()) {
             form.put("__rev", tokens.clientRevision);
         }
@@ -1607,61 +1736,23 @@ public class InstagramRipper extends AbstractJSONRipper {
         String fbDtsg;
         String actorId;
         String clientRevision;
+        String docId;
+        String pageQuery;
     }
 
     /**
-     * Reshapes {@code xdt_fbsearch__top_serp_graphql} into the GraphQL timeline
+     * Reshapes keyword-search GraphQL or fbsearch REST JSON into the GraphQL timeline
      * structure expected by {@link #getURLsFromJSON(JSONObject)}.
      * Package-private for unit tests.
      */
     JSONObject convertKeywordSearchToTimeline(JSONObject json) throws IOException {
-        JSONObject data = json.optJSONObject("data");
-        if (data == null) {
-            throw new IOException("Keyword search response missing data object");
+        if (json == null) {
+            throw new IOException("Keyword search response missing JSON");
         }
-        JSONObject serp = data.optJSONObject("xdt_fbsearch__top_serp_graphql");
-        if (serp == null) {
-            throw new IOException("Keyword search response missing xdt_fbsearch__top_serp_graphql");
-        }
-
         JSONArray edgesOut = new JSONArray();
-        JSONArray edgesIn = serp.optJSONArray("edges");
-        if (edgesIn != null) {
-            for (int i = 0; i < edgesIn.length(); i++) {
-                JSONObject edge = edgesIn.optJSONObject(i);
-                if (edge == null) {
-                    continue;
-                }
-                JSONObject unit = edge.optJSONObject("node");
-                if (unit == null || !"XDTTopSerpMediaGridUnit".equals(unit.optString("__typename"))) {
-                    continue;
-                }
-                JSONArray items = unit.optJSONArray("items");
-                if (items == null) {
-                    continue;
-                }
-                for (int j = 0; j < items.length(); j++) {
-                    JSONObject media = items.optJSONObject(j);
-                    if (media == null) {
-                        continue;
-                    }
-                    JSONObject node = mediaToNode(media);
-                    if (node == null) {
-                        continue;
-                    }
-                    JSONObject outEdge = new JSONObject();
-                    outEdge.put("node", node);
-                    edgesOut.put(outEdge);
-                }
-            }
-        }
+        collectPostMedia(json, edgesOut, new LinkedHashSet<>());
 
-        JSONObject pageInfo = serp.optJSONObject("page_info");
-        if (pageInfo == null) {
-            pageInfo = new JSONObject();
-            pageInfo.put("has_next_page", false);
-        }
-
+        JSONObject pageInfo = extractKeywordSearchPageInfo(json);
         JSONObject timelineMedia = new JSONObject();
         timelineMedia.put("edges", edgesOut);
         timelineMedia.put("page_info", pageInfo);
@@ -1672,6 +1763,160 @@ public class InstagramRipper extends AbstractJSONRipper {
         JSONObject result = new JSONObject();
         result.put("data", dataOut);
         return result;
+    }
+
+    private static boolean timelineHasMedia(JSONObject timeline) {
+        if (timeline == null) {
+            return false;
+        }
+        JSONObject data = timeline.optJSONObject("data");
+        if (data == null) {
+            return false;
+        }
+        JSONObject user = data.optJSONObject("user");
+        if (user == null) {
+            return false;
+        }
+        JSONObject media = user.optJSONObject("edge_owner_to_timeline_media");
+        if (media == null) {
+            return false;
+        }
+        JSONArray edges = media.optJSONArray("edges");
+        return edges != null && edges.length() > 0;
+    }
+
+    String summarizeKeywordSearch(JSONObject json) {
+        if (json == null) {
+            return "response=null";
+        }
+        StringBuilder sb = new StringBuilder();
+        JSONArray errors = json.optJSONArray("errors");
+        if (errors != null && errors.length() > 0) {
+            JSONObject first = errors.optJSONObject(0);
+            sb.append("graphqlError=").append(first != null ? first.optString("message") : errors.opt(0));
+            sb.append(' ');
+        }
+        JSONObject data = json.optJSONObject("data");
+        if (data == null) {
+            sb.append("dataKeys=").append(json.keySet());
+            return sb.toString().trim();
+        }
+        sb.append("dataKeys=").append(data.keySet());
+        JSONObject serp = data.optJSONObject("xdt_fbsearch__top_serp_graphql");
+        if (serp == null) {
+            sb.append(" serp=null");
+            return sb.toString().trim();
+        }
+        JSONArray edges = serp.optJSONArray("edges");
+        sb.append(" edges=").append(edges == null ? 0 : edges.length());
+        LinkedHashSet<String> types = new LinkedHashSet<>();
+        if (edges != null) {
+            for (int i = 0; i < edges.length(); i++) {
+                JSONObject edge = edges.optJSONObject(i);
+                JSONObject node = edge == null ? null : edge.optJSONObject("node");
+                types.add(node == null ? "null" : node.optString("__typename", "unknown"));
+            }
+        }
+        sb.append(" typenames=").append(types);
+        return sb.toString().trim();
+    }
+
+    private static JSONObject unwrapMedia(JSONObject obj) {
+        if (obj == null) {
+            return null;
+        }
+        if (looksLikePostMedia(obj)) {
+            return obj;
+        }
+        for (String key : Arrays.asList("media", "node", "clip", "item")) {
+            JSONObject inner = obj.optJSONObject(key);
+            if (looksLikePostMedia(inner)) {
+                return inner;
+            }
+        }
+        return obj;
+    }
+
+    static boolean looksLikePostMedia(JSONObject obj) {
+        if (obj == null) {
+            return false;
+        }
+        boolean hasUrl = obj.has("image_versions2")
+                || obj.has("video_versions")
+                || obj.has("carousel_media")
+                || obj.has("display_url")
+                || obj.has("video_url");
+        if (!hasUrl) {
+            return false;
+        }
+        String typename = obj.optString("__typename", "");
+        return obj.has("media_type")
+                || obj.has("code")
+                || obj.has("shortcode")
+                || obj.has("pk")
+                || typename.startsWith("Graph")
+                || "XDTMediaDict".equals(typename);
+    }
+
+    private void collectPostMedia(Object value, JSONArray edgesOut, Set<String> seen) {
+        if (value instanceof JSONObject) {
+            JSONObject obj = (JSONObject) value;
+            JSONObject media = unwrapMedia(obj);
+            if (looksLikePostMedia(media)) {
+                String id = media.optString("pk",
+                        media.optString("id",
+                                media.optString("code",
+                                        media.optString("display_url", ""))));
+                if (!id.isEmpty() && !seen.add(id)) {
+                    return;
+                }
+                JSONObject node = mediaToNode(media);
+                if (node == null && (media.has("display_url") || media.has("video_url"))) {
+                    node = media;
+                    if (!node.has("__typename")) {
+                        node.put("__typename", media.has("video_url") ? "GraphVideo" : "GraphImage");
+                    }
+                }
+                if (node != null) {
+                    JSONObject edge = new JSONObject();
+                    edge.put("node", node);
+                    edgesOut.put(edge);
+                }
+                return;
+            }
+            for (String key : obj.keySet()) {
+                collectPostMedia(obj.opt(key), edgesOut, seen);
+            }
+        } else if (value instanceof JSONArray) {
+            JSONArray arr = (JSONArray) value;
+            for (int i = 0; i < arr.length(); i++) {
+                collectPostMedia(arr.opt(i), edgesOut, seen);
+            }
+        }
+    }
+
+    private static JSONObject extractKeywordSearchPageInfo(JSONObject json) {
+        JSONObject data = json.optJSONObject("data");
+        if (data != null) {
+            JSONObject serp = data.optJSONObject("xdt_fbsearch__top_serp_graphql");
+            if (serp != null) {
+                JSONObject pageInfo = serp.optJSONObject("page_info");
+                if (pageInfo != null) {
+                    return pageInfo;
+                }
+            }
+        }
+        JSONObject pageInfo = new JSONObject();
+        String next = json.optString("next_max_id", "");
+        if (next.isEmpty() && json.optJSONObject("media_grid") != null) {
+            next = json.optJSONObject("media_grid").optString("next_max_id", "");
+        }
+        boolean hasMore = json.optBoolean("has_more", !next.isEmpty());
+        pageInfo.put("has_next_page", hasMore && !next.isEmpty());
+        if (!next.isEmpty()) {
+            pageInfo.put("end_cursor", next);
+        }
+        return pageInfo;
     }
 
     /**
