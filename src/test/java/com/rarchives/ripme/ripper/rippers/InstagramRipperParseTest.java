@@ -157,6 +157,45 @@ public class InstagramRipperParseTest {
     }
 
     @Test
+    void convertKeywordSearchToTimelineUnwrapsNestedMediaAndRestShape() throws Exception {
+        JSONObject image = new JSONObject();
+        image.put("media_type", 1);
+        image.put("pk", "111");
+        image.put("code", "abc");
+        JSONObject imageVersions = new JSONObject();
+        imageVersions.put("candidates", new JSONArray()
+                .put(new JSONObject().put("url", "https://example.com/wrapped.jpg")));
+        image.put("image_versions2", imageVersions);
+
+        JSONObject wrappedGrid = new JSONObject();
+        wrappedGrid.put("__typename", "XDTTopSerpSomethingElse");
+        wrappedGrid.put("items", new JSONArray().put(new JSONObject().put("media", image)));
+
+        JSONObject restMedia = new JSONObject();
+        restMedia.put("media_type", 1);
+        restMedia.put("pk", "222");
+        restMedia.put("code", "def");
+        restMedia.put("image_versions2", new JSONObject().put("candidates", new JSONArray()
+                .put(new JSONObject().put("url", "https://example.com/rest.jpg"))));
+
+        JSONObject json = new JSONObject();
+        JSONObject serp = new JSONObject();
+        serp.put("edges", new JSONArray().put(new JSONObject().put("node", wrappedGrid)));
+        json.put("data", new JSONObject().put("xdt_fbsearch__top_serp_graphql", serp));
+        json.put("media_grid", new JSONObject().put("sections", new JSONArray()
+                .put(new JSONObject().put("layout_content",
+                        new JSONObject().put("fill_items", new JSONArray()
+                                .put(new JSONObject().put("media", restMedia)))))));
+
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/popular/testkw"));
+        JSONObject timeline = ripper.convertKeywordSearchToTimeline(json);
+        List<String> urls = ripper.getURLsFromJSON(timeline);
+        assertEquals(2, urls.size());
+        assertTrue(urls.contains("https://example.com/wrapped.jpg"));
+        assertTrue(urls.contains("https://example.com/rest.jpg"));
+    }
+
+    @Test
     void extractsGraphqlTokensFromPopularPageHtml() throws Exception {
         String html = "<html><script>["
                 + "[\"DTSGInitialData\",[],{\"token\":\"NAf_testToken:123:456\"},258],"
@@ -169,6 +208,29 @@ public class InstagramRipperParseTest {
         assertEquals("NAf_testToken:123:456", tokens.fbDtsg);
         assertEquals("17841400000000000", tokens.actorId);
         assertEquals("1045582935", tokens.clientRevision);
+    }
+
+    @Test
+    void extractsKeywordSearchDocIdAndQueryFromHtml() throws Exception {
+        String html = "<script>{\"params\":{\"id\":\"26586987494245638\",\"name\":\"PolarisKeywordSearchExplorePageRelayQuery\"},"
+                + "\"variables\":{\"query\":\"Little Slavic\",\"search_session_id\":\"abc\"}}</script>";
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/popular/testkw"));
+        InstagramRipper.InstagramGraphqlTokens tokens = ripper.parseGraphqlTokens(html);
+        assertEquals("26586987494245638", tokens.docId);
+        assertEquals("Little Slavic", tokens.pageQuery);
+    }
+
+    @Test
+    void keywordSearchVariablesIncludeFirstAndAfter() throws Exception {
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/popular/testkw"));
+        JSONObject first = ripper.buildKeywordSearchVariables("testkw", null);
+        assertEquals("testkw", first.getString("query"));
+        assertEquals(12, first.getInt("first"));
+        assertTrue(first.isNull("after"));
+
+        JSONObject next = ripper.buildKeywordSearchVariables("testkw", "cursor123");
+        assertEquals("cursor123", next.getString("after"));
+        assertEquals("cursor123", next.getString("cursor"));
     }
 
     @Test
