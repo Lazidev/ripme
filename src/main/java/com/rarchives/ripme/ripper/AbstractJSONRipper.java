@@ -92,6 +92,12 @@ public abstract class AbstractJSONRipper extends AbstractRipper {
             }
 
             if (imageURLs.isEmpty() && !hasASAPRipping()) {
+                if (index > 0) {
+                    // An empty page partway through pagination is a normal end-of-album signal;
+                    // throwing here would discard everything already downloaded.
+                    logger.info("No more images at " + this.url + "; ending rip after " + index + " item(s)");
+                    break;
+                }
                 throw new IOException("No images found at " + this.url);
             }
 

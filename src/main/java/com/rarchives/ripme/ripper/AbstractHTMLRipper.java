@@ -178,6 +178,13 @@ public abstract class AbstractHTMLRipper extends AbstractRipper {
                 }
 
                 if (imageURLs.isEmpty()) {
+                    if (index > 0) {
+                        // Running out of images partway through pagination is how many galleries
+                        // end. Failing the rip here would discard everything already downloaded.
+                        logger.info("No more images at " + doc.location() + "; ending rip after " + index
+                                + " item(s)");
+                        break;
+                    }
                     throw new IOException("No images found at " + doc.location());
                 }
 

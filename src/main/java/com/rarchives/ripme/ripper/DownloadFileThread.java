@@ -6,6 +6,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
@@ -27,6 +32,10 @@ import com.rarchives.ripme.utils.Utils;
 class DownloadFileThread implements Runnable {
     private static final Logger logger = LogManager.getLogger(DownloadFileThread.class);
     private static final long MIN_FILE_SIZE_BYTES = 10 * 1024;
+    /** Cap on 429 backoff waits so a permanently throttled URL cannot spin forever. */
+    private static final int MAX_RATE_LIMIT_WAITS = 10;
+    private static final long MAX_RATE_LIMIT_WAIT_SECONDS = 300;
+    private static final long MAX_RETRY_SLEEP_MILLIS = 30_000;
 
     private String referrer = "";
     private Map<String, String> cookies = new HashMap<>();
@@ -49,7 +58,7 @@ class DownloadFileThread implements Runnable {
         this.saveAs = saveAs;
         this.prettySaveAs = Utils.removeCWD(saveAs.toPath());
         this.observer = observer;
-        this.retries = Utils.getConfigInteger("download.retries", 1);
+        this.retries = Utils.getConfigInteger("download.retries", 3);
         this.TIMEOUT = Utils.getConfigInteger("download.timeout", 60000);
         this.retrySleep = Utils.getConfigInteger("download.retry.sleep", 0);
         this.getFileExtFromMIME = getFileExtFromMIME;
@@ -129,6 +138,7 @@ class DownloadFileThread implements Runnable {
         URL urlToDownload = this.url;
         boolean redirected = false;
         int tries = 0; // Number of attempts to download
+        int rateLimitWaits = 0;
         do {
             tries += 1;
             try {
@@ -203,19 +213,21 @@ class DownloadFileThread implements Runnable {
                 if (statusCode == 429) { // Too Many Requests
                     logger.warn("[!] Received 429 Too Many Requests for " + url);
                     observer.notifyRateLimited("HTTP 429 Too Many Requests for " + url);
-                    String retryAfterHeader = huc.getHeaderField("Retry-After");
-                    int waitTimeSeconds = 5; // Default wait time
-
-                    if (retryAfterHeader != null) {
-                        try {
-                            waitTimeSeconds = Integer.parseInt(retryAfterHeader);
-                        } catch (NumberFormatException e) {
-                            logger.warn("Retry-After header not a number: " + retryAfterHeader);
-                        }
-                    } else {
-                        // Basic exponential backoff
-                        waitTimeSeconds = (int) Math.pow(2, tries);
+                    rateLimitWaits += 1;
+                    if (rateLimitWaits > MAX_RATE_LIMIT_WAITS) {
+                        logger.error("[!] Still rate limited after " + MAX_RATE_LIMIT_WAITS + " waits for " + url);
+                        observer.downloadErrored(url, "Rate limited (HTTP 429) after " + MAX_RATE_LIMIT_WAITS
+                                + " retries while downloading " + url.toExternalForm());
+                        return;
                     }
+                    // Waiting out a rate limit is not a failed attempt, so it must not consume the
+                    // normal retry budget - otherwise a throttled host exhausts the retries instantly.
+                    tries -= 1;
+                    long waitTimeSeconds = parseRetryAfterSeconds(huc.getHeaderField("Retry-After"));
+                    if (waitTimeSeconds <= 0) {
+                        waitTimeSeconds = Math.min(1L << Math.min(rateLimitWaits, 6), MAX_RATE_LIMIT_WAIT_SECONDS);
+                    }
+                    waitTimeSeconds = Math.min(waitTimeSeconds, MAX_RATE_LIMIT_WAIT_SECONDS);
 
                     logger.info("Waiting for " + waitTimeSeconds + " seconds before retrying...");
                     Utils.sleep(waitTimeSeconds * 1000L);
@@ -229,9 +241,11 @@ class DownloadFileThread implements Runnable {
                     return; // Not retriable, drop out.
                 }
                 if (statusCode / 100 == 5) { // 5xx errors
-                    observer.downloadErrored(url, Utils.getLocalizedString("retriable.status.code") + " " + statusCode
-                            + " while downloading " + url.toExternalForm());
-                    // Throw exception so download can be retried
+                    // Only throw here: reporting the error now would trip the ripper's consecutive
+                    // -failure circuit breaker even when the very next attempt succeeds. The retry
+                    // loop reports it for real once the retries are exhausted.
+                    logger.warn("[!] {} {} while downloading {}", Utils.getLocalizedString("retriable.status.code"),
+                            statusCode, url);
                     throw new IOException(Utils.getLocalizedString("retriable.status.code") + " " + statusCode);
                 }
                 if (huc.getContentLength() == 503 && urlToDownload.getHost().endsWith("imgur.com")) {
@@ -383,10 +397,9 @@ class DownloadFileThread implements Runnable {
                 }
                 break; // Download successful: break out of infinite loop
             } catch (SocketTimeoutException timeoutEx) {
-                // Handle the timeout
-                logger.error("[!] " + url.toExternalForm() + " timedout!");
-                // Download failed, break out of loop
-                break;
+                // A timeout is the archetypal transient error, so fall through to the retry check.
+                // Breaking out here reported a truncated (or missing) file as a completed download.
+                logger.error("[!] " + url.toExternalForm() + " timed out");
             } catch (HttpStatusException hse) {
                 logger.debug(Utils.getLocalizedString("http.status.exception"), hse);
                 logger.error("[!] HTTP status " + hse.getStatusCode() + " while downloading from " + urlToDownload);
@@ -413,7 +426,8 @@ class DownloadFileThread implements Runnable {
                 return;
             } else {
                 if (retrySleep > 0) {
-                    Utils.sleep(retrySleep);
+                    // Back off progressively so a struggling host gets time to recover.
+                    Utils.sleep(Math.min(retrySleep * (long) tries, MAX_RETRY_SLEEP_MILLIS));
                 }
             }
         } while (true);
@@ -421,4 +435,27 @@ class DownloadFileThread implements Runnable {
         logger.info("[+] Saved " + url + " as " + this.prettySaveAs);
     }
 
+    /**
+     * @return seconds to wait from a {@code Retry-After} header (delta-seconds or HTTP date),
+     *         or {@code 0} when the header is absent or unparseable.
+     */
+    static long parseRetryAfterSeconds(String retryAfterHeader) {
+        if (retryAfterHeader == null || retryAfterHeader.isBlank()) {
+            return 0;
+        }
+        String value = retryAfterHeader.trim();
+        try {
+            return Math.max(0, Long.parseLong(value));
+        } catch (NumberFormatException ignored) {
+            // Fall through to the HTTP-date form.
+        }
+        try {
+            long seconds = Duration.between(Instant.now(),
+                    ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant()).getSeconds();
+            return Math.max(0, seconds);
+        } catch (DateTimeParseException e) {
+            logger.warn("Could not parse Retry-After header: {}", retryAfterHeader);
+            return 0;
+        }
+    }
 }

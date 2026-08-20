@@ -25,6 +25,9 @@ import org.apache.logging.log4j.Logger;
 class DownloadVideoThread implements Runnable {
 
     private static final Logger logger = LogManager.getLogger(DownloadVideoThread.class);
+    /** Cap on 429 backoff waits so a permanently throttled URL cannot spin forever. */
+    private static final int MAX_RATE_LIMIT_WAITS = 10;
+    private static final long MAX_RATE_LIMIT_WAIT_SECONDS = 300;
 
     private final URL url;
     private final Path saveAs;
@@ -39,7 +42,7 @@ class DownloadVideoThread implements Runnable {
         this.saveAs = saveAs;
         this.prettySaveAs = Utils.removeCWD(saveAs);
         this.observer = observer;
-        this.retries = Utils.getConfigInteger("download.retries", 1);
+        this.retries = Utils.getConfigInteger("download.retries", 3);
         this.retrySleep = Utils.getConfigInteger("download.retry.sleep", 0);
     }
 
@@ -93,6 +96,7 @@ class DownloadVideoThread implements Runnable {
         logger.debug("Size of file at " + this.url + " = " + bytesTotal + "b");
 
         int tries = 0; // Number of attempts to download
+        int rateLimitWaits = 0;
         do {
             InputStream bis = null; OutputStream fos = null;
             HttpURLConnection huc = null;
@@ -124,17 +128,20 @@ class DownloadVideoThread implements Runnable {
                 int statusCode = huc.getResponseCode();
                 if (statusCode == 429) {
                     observer.notifyRateLimited("HTTP 429 Too Many Requests for " + url);
-                    String retryAfterHeader = huc.getHeaderField("Retry-After");
-                    int waitTimeSeconds = 5;
-                    if (retryAfterHeader != null) {
-                        try {
-                            waitTimeSeconds = Integer.parseInt(retryAfterHeader);
-                        } catch (NumberFormatException e) {
-                            logger.warn("Retry-After header not a number: {}", retryAfterHeader);
-                        }
-                    } else {
-                        waitTimeSeconds = (int) Math.pow(2, tries);
+                    rateLimitWaits += 1;
+                    if (rateLimitWaits > MAX_RATE_LIMIT_WAITS) {
+                        logger.error("[!] Still rate limited after {} waits for {}", MAX_RATE_LIMIT_WAITS, url);
+                        observer.downloadErrored(url, "Rate limited (HTTP 429) after " + MAX_RATE_LIMIT_WAITS
+                                + " retries while downloading " + url.toExternalForm());
+                        return;
                     }
+                    // Waiting out a rate limit must not consume the normal retry budget.
+                    tries -= 1;
+                    long waitTimeSeconds = DownloadFileThread.parseRetryAfterSeconds(huc.getHeaderField("Retry-After"));
+                    if (waitTimeSeconds <= 0) {
+                        waitTimeSeconds = 1L << Math.min(rateLimitWaits, 6);
+                    }
+                    waitTimeSeconds = Math.min(waitTimeSeconds, MAX_RATE_LIMIT_WAIT_SECONDS);
                     logger.warn("[429] Too Many Requests for {}. Waiting {} seconds before retrying", url,
                             waitTimeSeconds);
                     Utils.sleep(waitTimeSeconds * 1000L);
