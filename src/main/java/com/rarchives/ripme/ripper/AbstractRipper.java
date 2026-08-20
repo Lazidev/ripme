@@ -962,24 +962,34 @@ public abstract class AbstractRipper
         } catch (HttpStatusException e) {
             logger.error("Got exception while running ripper:", e);
             trackHttpStatusCode(e.getStatusCode());
-            failRipWithoutMarkingComplete(
+            finishRipAfterException(
                     "HTTP status code " + e.getStatusCode() + " for URL " + e.getUrl());
         } catch (Exception e) {
             logger.error("Got exception while running ripper:", e);
-            failRipWithoutMarkingComplete(e.getMessage());
+            finishRipAfterException(e.getMessage());
         } finally {
             cleanup();
         }
     }
 
     /**
-     * Waits for in-flight downloads after a fatal rip error without emitting
-     * {@link STATUS#RIP_COMPLETE}. Calling {@link #waitForThreads()} here used to
-     * report "Rip complete" even when {@link #rip()} failed before any media was queued.
+     * Waits for in-flight downloads after {@link #rip()} threw, then decides whether this
+     * counts as a completed rip or a failed one.
+     *
+     * <p>A stop request (user cancel, {@code maxdownloads} limit) unwinds the rip loop through
+     * {@link #stopCheck()}'s {@code IOException}, so an exception on its own does not mean the
+     * rip achieved nothing. Reporting those as failures is what caused rips to be recorded as
+     * "failed, 0 downloaded" while their files sat on disk.
      */
-    private void failRipWithoutMarkingComplete(String message) {
+    private void finishRipAfterException(String message) {
         if (threadPool != null) {
             threadPool.waitForThreads();
+        }
+        if (isStopped()) {
+            logger.info("Rip stopped after {} file(s); recording as complete", getCount());
+            completed = false;
+            checkIfComplete();
+            return;
         }
         // Suppress late checkIfComplete() callbacks from finishing download threads.
         completed = true;

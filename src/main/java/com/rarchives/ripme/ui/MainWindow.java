@@ -22,6 +22,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Date;
+import java.util.IllegalFormatException;
 import java.util.List;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -35,7 +36,12 @@ import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.LongSupplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import javax.imageio.ImageIO;
@@ -115,6 +121,16 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
     /** Count of in-flight album rips keyed by hostname (lowercased). */
     private final ConcurrentHashMap<String, AtomicInteger> activeDomainCounts = new ConcurrentHashMap<>();
+    /** Transient-failure retry count per normalized URL, cleared once the rip completes. */
+    private final ConcurrentHashMap<String, Integer> ripRetryAttempts = new ConcurrentHashMap<>();
+    /** Rate-limit throttles keyed by domain. In-memory only, so they never outlive the session. */
+    private final ConcurrentHashMap<String, DomainThrottle> domainThrottles = new ConcurrentHashMap<>();
+    private volatile LongSupplier clock = System::currentTimeMillis;
+    private static final ScheduledExecutorService RETRY_SCHEDULER = Executors.newSingleThreadScheduledExecutor(task -> {
+        Thread thread = new Thread(task, "ripme-rip-retry");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final ExecutorService ripExecutor = Executors.newCachedThreadPool();
     private QueueRipLauncher ripperLauncher = this::launchRipper;
 
@@ -416,7 +432,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                             refreshActivePanel();
                             return;
                         }
-                        if (getActiveDomainCount(domain) >= getMaxRipsPerDomain()) {
+                        if (getActiveDomainCount(domain) >= getMaxRipsForDomain(domain)) {
                             // At capacity for this domain — put it back on the queue instead.
                             addUrlToQueue(pausedUrl);
                             statusWithColor("Domain at concurrent limit; queued " + pausedUrl, Color.ORANGE);
@@ -571,8 +587,13 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         String domain = "unknown";
         try {
             URL ripperUrl = ripper.getURL();
-            if (ripperUrl != null && ripperUrl.getHost() != null) {
-                domain = ripperUrl.getHost().toLowerCase(Locale.ROOT);
+            if (ripperUrl != null) {
+                // Must match the bucket ripNextAlbum() acquired, or cancelRipper() would release
+                // a slot that was never taken and leave the real one held forever.
+                String normalized = normalizeDomain(ripperUrl.getHost());
+                if (normalized != null) {
+                    domain = normalized;
+                }
             }
         } catch (Exception e) {
             LOGGER.debug("Unable to determine domain for active ripper", e);
@@ -2593,7 +2614,6 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
         LOGGER.debug("Scanning queue ({} items) with active domains: {}", queueListModel.getSize(), activeDomainCounts);
 
-        int maxPerDomain = getMaxRipsPerDomain();
         boolean started;
         do {
             started = false;
@@ -2613,6 +2633,9 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                     updateQueue();
                     continue;
                 }
+                // Read per domain rather than once per scan: a rate-limited domain carries a
+                // lower allowance than the configured ceiling until it recovers.
+                int maxPerDomain = getMaxRipsForDomain(domain);
                 if (getActiveDomainCount(domain) >= maxPerDomain) {
                     LOGGER.debug("Deferring queued rip for domain {} because {} rip(s) already active (max {})",
                             domain, getActiveDomainCount(domain), maxPerDomain);
@@ -2811,17 +2834,25 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             if (url.getHost() == null) {
                 return null;
             }
-            String host = url.getHost().toLowerCase(Locale.ROOT);
-            // Treat www.example.com and example.com as the same concurrency bucket.
-            if (host.startsWith("www.")) {
-                host = host.substring(4);
-            }
-            return host;
+            return normalizeDomain(url.getHost());
         } catch (MalformedURLException | URISyntaxException e) {
             LOGGER.error("[!] Could not generate URL for '" + urlString + "'", e);
             error("Given URL is not valid, expecting http://website.com/page/...");
             return null;
         }
+    }
+
+    /**
+     * Concurrency bucket for a hostname. www.example.com and example.com must map to the same
+     * bucket, otherwise a slot acquired under one spelling is never released under the other and
+     * that domain stays permanently blocked.
+     */
+    static String normalizeDomain(String host) {
+        if (host == null || host.isEmpty()) {
+            return null;
+        }
+        String normalized = host.toLowerCase(Locale.ROOT);
+        return normalized.startsWith("www.") ? normalized.substring(4) : normalized;
     }
 
     void onRipperFinished(String domain, AbstractRipper ripper) {
@@ -2862,14 +2893,48 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         return activeDomainCounts;
     }
 
+    /** Lets tests advance time without waiting out a real recovery interval. */
+    void setClock(LongSupplier clock) {
+        if (clock != null) {
+            this.clock = clock;
+        }
+    }
+
     /** @deprecated Prefer {@link #getActiveDomainCounts()}; kept for older tests. */
     @Deprecated
     Set<String> getActiveDomains() {
         return activeDomainCounts.keySet();
     }
 
+    /**
+     * @return the user-configured ceiling on concurrent rips per domain.
+     */
     int getMaxRipsPerDomain() {
         return Math.max(1, Utils.getConfigInteger("queue.max_per_domain", 1));
+    }
+
+    /**
+     * @return how many rips {@code domain} may currently run, which is the configured ceiling
+     *         unless that domain is being throttled for rate limiting.
+     */
+    int getMaxRipsForDomain(String domain) {
+        int ceiling = getMaxRipsPerDomain();
+        if (domain == null) {
+            return ceiling;
+        }
+        DomainThrottle throttle = domainThrottles.get(domain);
+        if (throttle == null) {
+            return ceiling;
+        }
+        int limit = throttle.currentLimit(ceiling, clock.getAsLong(), getRateLimitRecoveryMillis());
+        if (throttle.isFullyRecovered(ceiling) && domainThrottles.remove(domain, throttle)) {
+            LOGGER.info("Rate-limit throttle for {} recovered to the configured {} concurrent rip(s)", domain, ceiling);
+        }
+        return limit;
+    }
+
+    static long getRateLimitRecoveryMillis() {
+        return Math.max(1000L, Utils.getConfigInteger("queue.rate_limit.recovery", 300000));
     }
 
     private int getActiveDomainCount(String domain) {
@@ -2899,26 +2964,97 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     }
 
     /**
-     * Drops concurrent same-domain rips to 1 after a rate-limit signal and refreshes the Downloads UI field.
+     * Halves how many rips may run against {@code domain} after it signalled a rate limit. Only
+     * that domain is affected, the user's configured ceiling is left untouched, and the allowance
+     * climbs back on its own once the domain stops complaining.
      */
-    private void reduceDomainConcurrencyOnRateLimit() {
-        int current = Utils.getConfigInteger("queue.max_per_domain", 1);
-        if (current <= 1) {
+    void throttleDomainAfterRateLimit(String domain) {
+        if (domain == null) {
             return;
         }
-        Utils.setConfigInteger("queue.max_per_domain", 1);
-        Utils.saveConfig();
-        LOGGER.warn("Rate limited; queue.max_per_domain reduced from {} to 1", current);
-        Runnable updateUi = () -> {
-            if (configMaxPerDomainText != null && !"1".equals(configMaxPerDomainText.getText())) {
-                configMaxPerDomainText.setText("1");
-            }
-            statusWithColor(Utils.getLocalizedString("rate.limited.concurrency"), Color.ORANGE);
-        };
+        int ceiling = getMaxRipsPerDomain();
+        if (ceiling <= 1) {
+            // Already down to one rip per domain; there is no concurrency left to give up.
+            return;
+        }
+        long now = clock.getAsLong();
+        long recoveryMillis = getRateLimitRecoveryMillis();
+        DomainThrottle throttle = domainThrottles.computeIfAbsent(domain, ignored -> new DomainThrottle(ceiling, now));
+        int previous = throttle.currentLimit(ceiling, now, recoveryMillis);
+        int reduced = throttle.reduce(ceiling, now);
+        if (reduced == previous) {
+            // Already at the floor; reduce() still refreshed the cooldown, so recovery restarts.
+            LOGGER.warn("Rate limited by {} again; holding at {} concurrent rip(s)", domain, reduced);
+            return;
+        }
+        LOGGER.warn("Rate limited by {}; concurrent rips reduced from {} to {}, recovering after {}s of quiet",
+                domain, previous, reduced, recoveryMillis / 1000);
+        String message = formatRateLimitStatus(domain, reduced);
         if (SwingUtilities.isEventDispatchThread()) {
-            updateUi.run();
+            statusWithColor(message, Color.ORANGE);
         } else {
-            SwingUtilities.invokeLater(updateUi);
+            SwingUtilities.invokeLater(() -> statusWithColor(message, Color.ORANGE));
+        }
+    }
+
+    /**
+     * A translation that drops or mangles the placeholders must not blow up the status bar, so
+     * fall back to a plain message when the template cannot be formatted.
+     */
+    private static String formatRateLimitStatus(String domain, int limit) {
+        try {
+            return String.format(Utils.getLocalizedString("rate.limited.concurrency"), domain, limit);
+        } catch (IllegalFormatException | MissingResourceException e) {
+            return "Rate limited by " + domain + " - concurrent rips for that domain reduced to " + limit;
+        }
+    }
+
+    private String getDomainForRipper(AbstractRipper ripper) {
+        if (ripper == null) {
+            return null;
+        }
+        try {
+            URL ripperUrl = ripper.getURL();
+            return ripperUrl == null ? null : normalizeDomain(ripperUrl.getHost());
+        } catch (Exception e) {
+            LOGGER.debug("Unable to determine domain for rate-limited ripper", e);
+            return null;
+        }
+    }
+
+    /**
+     * Session-scoped, per-domain concurrency allowance. A rate limit halves the allowance;
+     * it then climbs back one slot per quiet recovery interval. Nothing is persisted, so every
+     * restart begins at the configured ceiling again.
+     */
+    private static final class DomainThrottle {
+        private int limit;
+        private long lastChangeMillis;
+
+        private DomainThrottle(int limit, long nowMillis) {
+            this.limit = limit;
+            this.lastChangeMillis = nowMillis;
+        }
+
+        private synchronized int reduce(int ceiling, long nowMillis) {
+            limit = Math.max(1, Math.min(limit, ceiling) / 2);
+            lastChangeMillis = nowMillis;
+            return limit;
+        }
+
+        private synchronized int currentLimit(int ceiling, long nowMillis, long recoveryIntervalMillis) {
+            if (limit < ceiling && recoveryIntervalMillis > 0) {
+                long elapsed = nowMillis - lastChangeMillis;
+                if (elapsed >= recoveryIntervalMillis) {
+                    limit = (int) Math.min(ceiling, limit + elapsed / recoveryIntervalMillis);
+                    lastChangeMillis = nowMillis;
+                }
+            }
+            return Math.min(limit, ceiling);
+        }
+
+        private synchronized boolean isFullyRecovered(int ceiling) {
+            return limit >= ceiling;
         }
     }
 
@@ -2928,6 +3064,92 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         }
         String text = message.toString().toLowerCase(Locale.ROOT);
         return text.contains("429") || text.contains("rate limit") || text.contains("too many requests");
+    }
+
+    /**
+     * Error fragments that indicate the site or the network was temporarily unavailable rather
+     * than the album being genuinely unrippable.
+     */
+    private static final List<String> TRANSIENT_RIP_ERROR_MARKERS = List.of(
+            "timed out", "timeout", "connection reset", "connection refused", "connection closed",
+            "unknownhost", "unknown host", "no route to host", "network is unreachable",
+            "socketexception", "sockettimeout", "broken pipe", "unexpected end of file",
+            "unexpected end of stream", "premature", "handshake", "ssl", "too many requests",
+            "rate limit", "temporarily unavailable", "service unavailable", "bad gateway",
+            "gateway timeout", "read timed out", "stream closed");
+
+    private static final Pattern HTTP_STATUS_IN_MESSAGE = Pattern.compile("\\b(\\d{3})\\b");
+
+    /**
+     * @return {@code true} when {@code message} looks like a temporary failure worth re-ripping.
+     */
+    static boolean looksLikeTransientRipError(Object message) {
+        if (message == null) {
+            return false;
+        }
+        String text = message.toString().toLowerCase(Locale.ROOT);
+        if (text.contains("ripping interrupted")) {
+            // Deliberate stop (user cancel or download limit), not a failure to retry.
+            return false;
+        }
+        for (String marker : TRANSIENT_RIP_ERROR_MARKERS) {
+            if (text.contains(marker)) {
+                return true;
+            }
+        }
+        Matcher statusMatcher = HTTP_STATUS_IN_MESSAGE.matcher(text);
+        while (statusMatcher.find()) {
+            int status = Integer.parseInt(statusMatcher.group(1));
+            if (status == 408 || status == 429 || status / 100 == 5) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static int getMaxRipRetries() {
+        return Math.max(0, Utils.getConfigInteger("rip.retries", 2));
+    }
+
+    /**
+     * Exponential backoff between whole-rip retries, capped so a long queue keeps moving.
+     */
+    static long getRipRetryDelayMillis(int attempt) {
+        long base = Math.max(1000L, Utils.getConfigInteger("rip.retry.delay", 30000));
+        long delay = base * (1L << Math.min(Math.max(attempt, 1) - 1, 4));
+        return Math.min(delay, TimeUnit.MINUTES.toMillis(15));
+    }
+
+    /**
+     * Puts a rip that failed for a temporary reason back on the queue after a backoff, so a single
+     * timeout or 5xx no longer permanently marks an album as failed.
+     */
+    private void scheduleRipRetryIfTransient(AbstractRipper failedRipper, Object message) {
+        if (failedRipper == null || failedRipper.isStopped() || !looksLikeTransientRipError(message)) {
+            return;
+        }
+        int maxRetries = getMaxRipRetries();
+        if (maxRetries <= 0) {
+            return;
+        }
+        String url = normalizeQueueUrl(failedRipper.getURL().toExternalForm());
+        int attempt = ripRetryAttempts.merge(url, 1, Integer::sum);
+        if (attempt > maxRetries) {
+            LOGGER.warn("Giving up on {} after {} transient failure(s)", url, attempt - 1);
+            ripRetryAttempts.remove(url);
+            return;
+        }
+        long delayMillis = getRipRetryDelayMillis(attempt);
+        LOGGER.warn("Transient failure for {} (retry {}/{}); re-queueing in {}s", url, attempt, maxRetries,
+                delayMillis / 1000);
+        statusWithColor("Retrying " + url + " in " + (delayMillis / 1000) + "s (attempt " + attempt + " of "
+                + maxRetries + ")", Color.ORANGE);
+        RETRY_SCHEDULER.schedule(() -> SwingUtilities.invokeLater(() -> {
+            // Force the rip so "skip already downloaded" does not swallow the retry of a
+            // partially completed album.
+            addUrlToQueue(url, true, null);
+            ripNextAlbum();
+        }), delayMillis, TimeUnit.MILLISECONDS);
     }
 
     boolean isQueuePaused() {
@@ -3100,7 +3322,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 appendLog((String) msg.getObject(), Color.RED);
             }
             if (looksLikeRateLimit(msg.getObject())) {
-                reduceDomainConcurrencyOnRateLimit();
+                throttleDomainAfterRateLimit(getDomainForRipper(evt.ripper));
             }
             refreshActivePanel();
             break;
@@ -3109,7 +3331,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 appendLog((String) msg.getObject(), Color.ORANGE);
             }
             if (looksLikeRateLimit(msg.getObject())) {
-                reduceDomainConcurrencyOnRateLimit();
+                throttleDomainAfterRateLimit(getDomainForRipper(evt.ripper));
             }
             break;
         case DOWNLOAD_SKIP:
@@ -3123,22 +3345,23 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 appendLog((String) msg.getObject(), Color.RED);
             }
             if (looksLikeRateLimit(msg.getObject())) {
-                reduceDomainConcurrencyOnRateLimit();
+                throttleDomainAfterRateLimit(getDomainForRipper(evt.ripper));
             }
-            finalizeEmptyHistoryEntry(evt.ripper);
+            finalizeFailedHistoryEntry(evt.ripper);
             statusProgress.setValue(0);
             statusProgress.setVisible(false);
             openButton.setVisible(false);
             pack();
             statusWithColor("Error: " + msg.getObject(), Color.RED);
             removeActiveRipperEntry(evt.ripper);
+            scheduleRipRetryIfTransient(evt.ripper, msg.getObject());
             break;
 
         case RATE_LIMITED:
             if (LOGGER.isEnabled(Level.WARN)) {
                 appendLog((String) msg.getObject(), Color.ORANGE);
             }
-            reduceDomainConcurrencyOnRateLimit();
+            throttleDomainAfterRateLimit(getDomainForRipper(evt.ripper));
             refreshActivePanel();
             break;
 
@@ -3148,7 +3371,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             }
             statusWithColor((String) msg.getObject(), Color.ORANGE);
             if (looksLikeRateLimit(msg.getObject())) {
-                reduceDomainConcurrencyOnRateLimit();
+                throttleDomainAfterRateLimit(getDomainForRipper(evt.ripper));
             }
             refreshActivePanel();
             break;
@@ -3156,6 +3379,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         case RIP_COMPLETE:
             RipStatusComplete rsc = (RipStatusComplete) msg.getObject();
             String url = normalizeQueueUrl(evt.ripper.getURL().toExternalForm());
+            ripRetryAttempts.remove(url);
             HistoryEntry entry;
             if (HISTORY.containsURL(url)) {
                 entry = HISTORY.getEntryByURL(url);
@@ -3265,7 +3489,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             if (LOGGER.isEnabled(Level.ERROR)) {
                 appendLog((String) msg.getObject(), Color.RED);
             }
-            finalizeEmptyHistoryEntry(evt.ripper);
+            finalizeFailedHistoryEntry(evt.ripper);
             statusProgress.setValue(0);
             statusProgress.setVisible(false);
             openButton.setVisible(false);
@@ -3277,14 +3501,18 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     }
 
     /**
-     * Keeps a history row for a rip that errored out: URL stays visible with Failed=1 and 0/0 latest.
+     * Keeps a history row for a rip that errored out. The row records however many files the rip
+     * did manage to download before failing, so a partially successful rip is never reported as
+     * "failed, 0 downloaded" while its files sit on disk.
      */
-    private void finalizeEmptyHistoryEntry(AbstractRipper ripper) {
+    private void finalizeFailedHistoryEntry(AbstractRipper ripper) {
         String url = normalizeQueueUrl(ripper.getURL().toExternalForm());
+        int downloaded = Math.max(0, ripper.getDownloadedCount());
         HistoryEntry entry;
         if (HISTORY.containsURL(url)) {
             entry = HISTORY.getEntryByURL(url);
-            entry.latestCount = 0;
+            entry.latestCount = downloaded;
+            entry.count += downloaded;
             entry.timesDownloaded += 1;
             entry.skipped = false;
             entry.failed = true;
@@ -3297,8 +3525,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             entry = new HistoryEntry();
             entry.url = url;
             entry.dir = ripper.getWorkingDir().getAbsolutePath();
-            entry.latestCount = 0;
-            entry.count = 0;
+            entry.latestCount = downloaded;
+            entry.count = downloaded;
             entry.timesDownloaded = 1;
             entry.skipped = false;
             entry.failed = true;
