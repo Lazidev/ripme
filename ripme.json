@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.300-1-4ac4710",
-  "currentHash": "a901f6773ae972af9443a83eb87a35456a7daeb1aaf83bcb890bf445b6197cfd",
+  "latestVersion": "2.1.301-1-06d5ebd",
+  "currentHash": "f7781468b5433a87de9a1ad0dee45326ee416f63f9148adab4726b8a3c3d6cfe",
   "changeList": [
+    "2.1.301-1-06d5ebd: Merge branch 'main' of https://github.com/Lazidev/ripme",
+    "2.1.301-1-06d5ebd: Built at 2026-08-20T01:04:29Z",
     "2.1.300-1-4ac4710: Add design notes on HAR-assisted ripper authoring.",
     "2.1.300-1-4ac4710: Built at 2026-08-08T12:04:43Z",
     "2.1.299-1-fdd5bbf: Rip elitebabes listings into a single folder.",
