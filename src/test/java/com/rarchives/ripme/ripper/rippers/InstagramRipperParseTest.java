@@ -155,4 +155,64 @@ public class InstagramRipperParseTest {
         assertTrue(outPage.getBoolean("has_next_page"));
         assertEquals("cursor123", outPage.getString("end_cursor"));
     }
+
+    @Test
+    void extractsGraphqlTokensFromPopularPageHtml() throws Exception {
+        String html = "<html><script>["
+                + "[\"DTSGInitialData\",[],{\"token\":\"NAf_testToken:123:456\"},258],"
+                + "[\"LSD\",[],{\"token\":\"lsdTestToken\"},323],"
+                + "[\"SiteData\",[],{\"client_revision\":1045582935},141]"
+                + "],\"actorID\":\"17841400000000000\"</script></html>";
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/popular/testkw"));
+        InstagramRipper.InstagramGraphqlTokens tokens = ripper.parseGraphqlTokens(html);
+        assertEquals("lsdTestToken", tokens.lsd);
+        assertEquals("NAf_testToken:123:456", tokens.fbDtsg);
+        assertEquals("17841400000000000", tokens.actorId);
+        assertEquals("1045582935", tokens.clientRevision);
+    }
+
+    @Test
+    void keywordSearchFormIncludesLsdDtsgAndJazoest() throws Exception {
+        InstagramRipper.InstagramGraphqlTokens tokens = new InstagramRipper.InstagramGraphqlTokens();
+        tokens.lsd = "lsdTestToken";
+        tokens.fbDtsg = "abc";
+        tokens.actorId = "17841400000000000";
+        tokens.clientRevision = "1045582935";
+
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/popular/testkw"));
+        java.util.Map<String, String> form = ripper.buildKeywordSearchForm(tokens, "{\"query\":\"testkw\"}");
+
+        assertEquals("lsdTestToken", form.get("lsd"));
+        assertEquals("abc", form.get("fb_dtsg"));
+        assertEquals(InstagramRipper.computeJazoest("abc"), form.get("jazoest"));
+        assertEquals("2" + (int) ('a' + 'b' + 'c'), form.get("jazoest"));
+        assertEquals("17841400000000000", form.get("av"));
+        assertEquals("0", form.get("__user"));
+        assertEquals("7", form.get("__comet_req"));
+        assertEquals("RelayModern", form.get("fb_api_caller_class"));
+        assertEquals("PolarisKeywordSearchExplorePageRelayQuery", form.get("fb_api_req_friendly_name"));
+        assertEquals("37324993597144881", form.get("doc_id"));
+        assertEquals("1045582935", form.get("__rev"));
+        assertEquals("{\"query\":\"testkw\"}", form.get("variables"));
+    }
+
+    @Test
+    void htmlResponseIncludesBodySnippet() throws Exception {
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/popular/testkw"));
+        IOException ex = assertThrows(IOException.class,
+                () -> ripper.parseInstagramJsonBody(
+                        "<!DOCTYPE html><html><body>blocked</body></html>",
+                        "keyword search for testkw"));
+        assertTrue(ex.getMessage().contains("HTML instead of JSON"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("Response starts:"), ex.getMessage());
+    }
+
+    @Test
+    void parsesGraphqlBodyWithFacebookAntiHijackPrefix() throws Exception {
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/"));
+        JSONObject json = ripper.parseInstagramJsonBody(
+                "for (;;);{\"data\":{\"ok\":true},\"status\":\"ok\"}", "unit test");
+        assertEquals("ok", json.getString("status"));
+        assertTrue(json.getJSONObject("data").getBoolean("ok"));
+    }
 }
