@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.302-1-6b354ec",
-  "currentHash": "34d3f6df0f74018d3a4dff5f2b709ff2f6c60e475c57120a1ec67e0da2595e00",
+  "latestVersion": "2.1.303-1-01be5da",
+  "currentHash": "b538efc7d81da51156d35b44fab23778806d97ff4df2813468bafd9c3d54a44d",
   "changeList": [
+    "2.1.303-1-01be5da: PR #145 - Fix Instagram popular search GraphQL by sending lsd and fb_dtsg from … (https://github.com/Lazidev/ripme/pull/145) — …page HTML. # Category",
+    "2.1.303-1-01be5da: Built at 2026-08-20T01:22:19Z",
     "2.1.302-1-6b354ec: PR #144 - Improve rip failure resilience and per-domain rate-limit throttling. (https://github.com/Lazidev/ripme/pull/144) — Partially successful rips now record their download counts instead of failing as 0, transient errors are retried, and rate limits throttle only the affected domain with automatic recovery. # Category",
     "2.1.302-1-6b354ec: Built at 2026-08-20T01:08:35Z",
     "2.1.301-1-06d5ebd: Merge branch 'main' of https://github.com/Lazidev/ripme",
