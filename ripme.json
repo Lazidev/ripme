@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.304-1-c704447",
-  "currentHash": "4e168b081c424ef8fc1800071846ce25ebfd7238804119b5bf12a1a19a4a9247",
+  "latestVersion": "2.1.305-1-ae0b739",
+  "currentHash": "934ea2f471e15959e46e1cc76092b99ece1027745f83068b971027e61d7831f0",
   "changeList": [
+    "2.1.305-1-ae0b739: PR #147 - Fix Instagram profile rips that return the HTML shell and empty 429s (https://github.com/Lazidev/ripme/pull/147) — <!-- CURSOR_AGENT_PR_BODY_BEGIN --> # Category",
+    "2.1.305-1-ae0b739: Built at 2026-10-09T06:09:54Z",
     "2.1.304-1-c704447: PR #146 - Fix empty Instagram popular search by sending Relay first/after and f… (https://github.com/Lazidev/ripme/pull/146) — …alling back to fbsearch REST. # Category",
     "2.1.304-1-c704447: Built at 2026-08-20T06:19:13Z",
     "2.1.303-1-01be5da: PR #145 - Fix Instagram popular search GraphQL by sending lsd and fb_dtsg from … (https://github.com/Lazidev/ripme/pull/145) — …page HTML. # Category",
