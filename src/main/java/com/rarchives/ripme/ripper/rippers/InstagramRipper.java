@@ -45,8 +45,15 @@ public class InstagramRipper extends AbstractJSONRipper {
     private static final int TIMEOUT = 20000;
     private static final int MAX_RATE_LIMIT_RETRIES = 6;
     private static final String INSTAGRAM_APP_ID = "936619743392459";
-    /** Instagram rejects truncated or non-browser user agents with 429/403. */
-    private static final String INSTAGRAM_USER_AGENT = AbstractRipper.USER_AGENT;
+    /**
+     * Session cookies are read from Firefox. Instagram answers a Chrome user agent
+     * paired with those cookies with the app-shell HTML or an empty 429.
+     */
+    private static final String INSTAGRAM_USER_AGENT = AbstractRipper.FIREFOX_USER_AGENT;
+    /** Short gap so parallel profile rips do not stampede the same endpoints. */
+    private static final long INSTAGRAM_MIN_INTERVAL_MS = 350L;
+    private static final Object INSTAGRAM_PACE_LOCK = new Object();
+    private static long instagramNextRequestMillis = 0L;
     /**
      * Logged-out Polaris profile timeline query (returns classic
      * {@code edge_owner_to_timeline_media} edges).
@@ -57,6 +64,12 @@ public class InstagramRipper extends AbstractJSONRipper {
      * {@code xdt_api__v1__feed__user_timeline_graphql_connection} with private-API media nodes).
      */
     private static final String GRAPHQL_DOC_ID_FEED_TIMELINE = "7898261790222653";
+    /**
+     * Current logged-in posts query ({@code PolarisProfilePostsQuery}). Instagram rotates
+     * this; a value embedded in the profile HTML is preferred when present.
+     */
+    private static final String GRAPHQL_DOC_ID_PROFILE_POSTS = "34579740524958711";
+    private static final String GRAPHQL_FRIENDLY_NAME_PROFILE_POSTS = "PolarisProfilePostsQuery";
     /**
      * Keyword search explore page ({@code /popular/{query}}), used by
      * {@code PolarisKeywordSearchExplorePageRelayQuery}.
@@ -78,6 +91,14 @@ public class InstagramRipper extends AbstractJSONRipper {
             Pattern.DOTALL);
     private static final Pattern KEYWORD_SEARCH_QUERY_PATTERN = Pattern.compile(
             "\"query\":\"([^\"]+)\",\"search_session_id\"");
+    private static final Pattern PROFILE_POSTS_DOC_ID_PATTERN = Pattern.compile(
+            "PolarisProfilePosts(?:TabContent)?Query(?:_connection)?.{0,500}?\"id\"\\s*:\\s*\"(\\d{10,})\"",
+            Pattern.DOTALL);
+    private static final Pattern PROFILE_POSTS_DOC_ID_PATTERN_REV = Pattern.compile(
+            "\"id\"\\s*:\\s*\"(\\d{10,})\".{0,500}?PolarisProfilePosts(?:TabContent)?Query(?:_connection)?",
+            Pattern.DOTALL);
+    private static final Pattern PROFILE_POSTS_NAME_PATTERN = Pattern.compile(
+            "\"name\"\\s*:\\s*\"(PolarisProfilePosts[^\"]*)\"");
     private String csrftoken = null;
     
     static {
@@ -95,6 +116,9 @@ public class InstagramRipper extends AbstractJSONRipper {
     private String endCursor = null;
     private String popularSearchSessionId = null;
     private InstagramGraphqlTokens keywordSearchTokens = null;
+    private InstagramGraphqlTokens profileTokens = null;
+    private boolean profileTokensAttempted = false;
+    private JSONObject bootstrappedProfileTimeline = null;
     private boolean keywordSearchUseRest = false;
     private final int maxDownloads = Utils.getConfigInteger("maxdownloads", -1);
     private final DownloadLimitTracker downloadLimitTracker = new DownloadLimitTracker(maxDownloads);
@@ -300,6 +324,7 @@ public class InstagramRipper extends AbstractJSONRipper {
             if (!hasCookie("sessionid")) {
                 throw loginRequiredException("Reels rips require a logged-in Instagram session.");
             }
+            ensureProfileGraphqlTokens(username);
             JSONObject clips = getClipsUserPage(username, null);
             validateTimelineResponse(clips, username);
             return clips;
@@ -307,7 +332,13 @@ public class InstagramRipper extends AbstractJSONRipper {
 
         IOException lastFailure = null;
 
-        // Prefer the private feed API when logged in (50 items/page, full media URLs).
+        // Load the profile document first so later calls send a real www-claim and GraphQL
+        // has lsd/fb_dtsg. Posting /graphql/query without those tokens returns the Instagram
+        // HTML shell (the same <!DOCTYPE html> failure keyword search used to hit).
+        ensureProfileGraphqlTokens(username);
+
+        // Feed still returns full media URLs when Instagram accepts it. It often redirects
+        // to the app shell; that failure falls through to the Relay timeline query.
         if (hasCookie("sessionid")) {
             try {
                 JSONObject feedPage = getFeedUserPage(username, null);
@@ -315,20 +346,29 @@ public class InstagramRipper extends AbstractJSONRipper {
                 return feedPage;
             } catch (IOException e) {
                 lastFailure = e;
-                logger.warn("Feed API first page failed for {}: {}. Trying GraphQL fallback.",
+                logger.warn("Feed API first page failed for {}: {}. Trying GraphQL.",
                         username, e.getMessage());
             }
+        }
 
-            // Same GraphQL path used for pagination — often still works when feed returns HTML
-            // and web_profile_info is bot-blocked with empty 429s.
+        try {
+            JSONObject graphqlPage = fetchGraphqlTimelinePage(username, null);
+            validateTimelineResponse(graphqlPage, username);
+            return graphqlPage;
+        } catch (IOException e) {
+            lastFailure = e;
+            logger.warn("GraphQL first page failed for {}: {}. Trying other profile sources.",
+                    username, e.getMessage());
+        }
+
+        if (bootstrappedProfileTimeline != null) {
             try {
-                JSONObject graphqlPage = fetchGraphqlTimelinePage(username, null);
-                validateTimelineResponse(graphqlPage, username);
-                return graphqlPage;
+                validateTimelineResponse(bootstrappedProfileTimeline, username);
+                logger.info("Using timeline embedded in profile HTML for {}", username);
+                return bootstrappedProfileTimeline;
             } catch (IOException e) {
                 lastFailure = e;
-                logger.warn("GraphQL first page failed for {}: {}. Falling back to web_profile_info.",
-                        username, e.getMessage());
+                logger.warn("Profile HTML timeline was unusable for {}: {}", username, e.getMessage());
             }
         }
 
@@ -350,14 +390,6 @@ public class InstagramRipper extends AbstractJSONRipper {
                                 + "(web_profile_info blocked/429 and no sessionid cookie). "
                                 + "Instagram returned empty user data — log into Firefox and fully quit "
                                 + "so sessionid is available.");
-            }
-            try {
-                JSONObject graphqlPage = fetchGraphqlTimelinePage(username, null);
-                validateTimelineResponse(graphqlPage, username);
-                return graphqlPage;
-            } catch (IOException e) {
-                lastFailure = e;
-                logger.warn("GraphQL first page failed for {}: {}", username, e.getMessage());
             }
             throw loginRequiredException(
                     "Could not load Instagram profile '" + username + "'. "
@@ -418,14 +450,31 @@ public class InstagramRipper extends AbstractJSONRipper {
         if (userId == null || userId.isEmpty()) {
             throw new IOException("Failed to get user ID for " + username);
         }
-        StringBuilder urlBuilder = new StringBuilder(String.format(
-                "https://www.instagram.com/api/v1/feed/user/%s/?count=50", userId));
+        String query = "count=50";
         if (endCursor != null && !endCursor.isEmpty()) {
-            urlBuilder.append("&max_id=").append(endCursor);
+            query += "&max_id=" + endCursor;
         }
-        String requestUrl = urlBuilder.toString();
-        logger.debug("Fetching feed API URL: {}", requestUrl);
+        IOException lastException = null;
+        for (String requestUrl : Arrays.asList(
+                "https://www.instagram.com/api/v1/feed/user/" + userId + "/?" + query,
+                "https://i.instagram.com/api/v1/feed/user/" + userId + "/?" + query)) {
+            try {
+                return fetchFeedUserPage(username, requestUrl);
+            } catch (IOException e) {
+                lastException = e;
+                logger.warn("Feed API {} failed for {}: {}", requestUrl, username, e.getMessage());
+            }
+        }
+        throw lastException != null
+                ? lastException
+                : new IOException("Failed to fetch feed for " + username);
+    }
 
+    private JSONObject fetchFeedUserPage(String username, String requestUrl) throws IOException {
+        logger.debug("Fetching feed API URL: {}", requestUrl);
+        paceInstagramRequest();
+
+        boolean mobileHost = requestUrl.contains("i.instagram.com");
         Http feedRequest = Http.url(requestUrl)
                 .userAgent(INSTAGRAM_USER_AGENT)
                 .header("Accept", "*/*")
@@ -433,7 +482,7 @@ public class InstagramRipper extends AbstractJSONRipper {
                 .header("X-IG-App-ID", INSTAGRAM_APP_ID)
                 .header("X-Requested-With", "XMLHttpRequest")
                 .header("X-ASBD-ID", "129477")
-                .header("X-IG-WWW-Claim", cookies.getOrDefault("ig_www_claim", "0"))
+                .header("X-IG-WWW-Claim", wwwClaim())
                 .header("X-CSRFToken", cookies.getOrDefault("csrftoken", ""))
                 .header("Origin", "https://www.instagram.com")
                 .header("DNT", "1")
@@ -441,10 +490,11 @@ public class InstagramRipper extends AbstractJSONRipper {
                 .header("Referer", "https://www.instagram.com/" + username + "/")
                 .header("Sec-Fetch-Dest", "empty")
                 .header("Sec-Fetch-Mode", "cors")
-                .header("Sec-Fetch-Site", "same-origin")
+                .header("Sec-Fetch-Site", mobileHost ? "same-site" : "same-origin")
                 .cookies(cookies);
         applyOptionalInstagramHeaders(feedRequest);
         Response response = feedRequest.ignoreContentType().ignoreHttpErrors().response();
+        absorbInstagramResponse(response);
 
         int statusCode = response.statusCode();
         String body = response.body();
@@ -617,6 +667,7 @@ public class InstagramRipper extends AbstractJSONRipper {
         logger.debug("Fetching reels for {} (maxId={})", username, maxId);
 
         try {
+            paceInstagramRequest();
             Http request = Http.url(requestUrl)
                     .method(Method.POST)
                     .data(data)
@@ -626,7 +677,7 @@ public class InstagramRipper extends AbstractJSONRipper {
                     .header("X-IG-App-ID", INSTAGRAM_APP_ID)
                     .header("X-Requested-With", "XMLHttpRequest")
                     .header("X-ASBD-ID", "129477")
-                    .header("X-IG-WWW-Claim", cookies.getOrDefault("ig_www_claim", "0"))
+                    .header("X-IG-WWW-Claim", wwwClaim())
                     .header("X-CSRFToken", cookies.getOrDefault("csrftoken", ""))
                     .header("Origin", "https://www.instagram.com")
                     .header("Referer", "https://www.instagram.com/" + username + "/reels/")
@@ -638,6 +689,7 @@ public class InstagramRipper extends AbstractJSONRipper {
                     .ignoreHttpErrors();
             applyOptionalInstagramHeaders(request);
             Response response = request.response();
+            absorbInstagramResponse(response);
 
             int statusCode = response.statusCode();
             String jsonText = response.body();
@@ -833,28 +885,45 @@ public class InstagramRipper extends AbstractJSONRipper {
         logger.debug("Getting user ID for username: " + username);
 
         IOException lastException = null;
+        // web_profile_info answers empty 429s while topsearch still returns JSON.
+        // Hitting the blocked endpoint first makes the rest of the rip look like a bot.
+        boolean loggedIn = hasCookie("sessionid");
 
-        // web_profile_info is the most reliable current path (also used by Instaloader).
-        try {
-            String id = fetchUserIdFromProfile(username);
-            if (id != null && !id.isEmpty()) {
-                logger.info("Resolved user ID for {} via web_profile_info API", username);
-                return cacheUserId(id);
+        if (loggedIn) {
+            try {
+                String id = fetchUserIdFromTopSearch(username);
+                if (id != null && !id.isEmpty()) {
+                    logger.info("Resolved user ID for {} via topsearch", username);
+                    return cacheUserId(id);
+                }
+            } catch (IOException e) {
+                lastException = e;
+                logger.warn("Topsearch lookup failed for {}: {}", username, e.getMessage());
             }
-        } catch (IOException e) {
-            lastException = e;
-            logger.warn("web_profile_info lookup failed for {}: {}", username, e.getMessage());
         }
 
-        try {
-            String id = fetchUserIdFromTopSearch(username);
-            if (id != null && !id.isEmpty()) {
-                logger.info("Resolved user ID for {} via topsearch", username);
-                return cacheUserId(id);
+        if (!loggedIn) {
+            try {
+                String id = fetchUserIdFromProfile(username);
+                if (id != null && !id.isEmpty()) {
+                    logger.info("Resolved user ID for {} via web_profile_info API", username);
+                    return cacheUserId(id);
+                }
+            } catch (IOException e) {
+                lastException = e;
+                logger.warn("web_profile_info lookup failed for {}: {}", username, e.getMessage());
             }
-        } catch (IOException e) {
-            lastException = e;
-            logger.warn("Topsearch lookup failed for {}: {}", username, e.getMessage());
+
+            try {
+                String id = fetchUserIdFromTopSearch(username);
+                if (id != null && !id.isEmpty()) {
+                    logger.info("Resolved user ID for {} via topsearch", username);
+                    return cacheUserId(id);
+                }
+            } catch (IOException e) {
+                lastException = e;
+                logger.warn("Topsearch lookup failed for {}: {}", username, e.getMessage());
+            }
         }
 
         try {
@@ -866,6 +935,19 @@ public class InstagramRipper extends AbstractJSONRipper {
         } catch (IOException e) {
             lastException = e;
             logger.warn("Profile HTML lookup failed for {}: {}", username, e.getMessage());
+        }
+
+        if (loggedIn) {
+            try {
+                String id = fetchUserIdFromProfile(username);
+                if (id != null && !id.isEmpty()) {
+                    logger.info("Resolved user ID for {} via web_profile_info API", username);
+                    return cacheUserId(id);
+                }
+            } catch (IOException e) {
+                lastException = e;
+                logger.warn("web_profile_info lookup failed for {}: {}", username, e.getMessage());
+            }
         }
 
         throw new IOException("Could not fetch user ID for '" + username
@@ -887,6 +969,7 @@ public class InstagramRipper extends AbstractJSONRipper {
 
         for (int attempt = 1; attempt <= MAX_RATE_LIMIT_RETRIES; attempt++) {
             try {
+                paceInstagramRequest();
                 Http request = Http.url(requestUrl)
                         .retries(1)
                         .ignoreHttpErrors()
@@ -899,7 +982,7 @@ public class InstagramRipper extends AbstractJSONRipper {
                 if (sendCookies) {
                     request.header("X-Requested-With", "XMLHttpRequest")
                             .header("X-ASBD-ID", "129477")
-                            .header("X-IG-WWW-Claim", cookies.getOrDefault("ig_www_claim", "0"))
+                            .header("X-IG-WWW-Claim", wwwClaim())
                             .header("X-CSRFToken", cookies.getOrDefault("csrftoken", ""))
                             .header("Origin", "https://www.instagram.com")
                             .header("Connection", "keep-alive")
@@ -919,6 +1002,7 @@ public class InstagramRipper extends AbstractJSONRipper {
                 }
 
                 Response response = request.response();
+                absorbInstagramResponse(response);
                 int statusCode = response.statusCode();
                 String responseBody = response.body();
                 logger.debug("Instagram API {} -> status {} (len={})", requestUrl, statusCode, responseBody != null ? responseBody.length() : 0);
@@ -1031,6 +1115,7 @@ public class InstagramRipper extends AbstractJSONRipper {
 
     private String fetchUserIdFromProfileHtml(String username) throws IOException {
         String profileUrl = "https://www.instagram.com/" + username + "/";
+        paceInstagramRequest();
         Response response = Http.url(profileUrl)
                 .userAgent(INSTAGRAM_USER_AGENT)
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
@@ -1043,6 +1128,7 @@ public class InstagramRipper extends AbstractJSONRipper {
                 .cookies(cookies)
                 .ignoreContentType()
                 .response();
+        absorbInstagramResponse(response);
 
         if (response.statusCode() != 200) {
             throw new IOException("Profile page HTTP " + response.statusCode());
@@ -1490,6 +1576,7 @@ public class InstagramRipper extends AbstractJSONRipper {
         String referer = "https://www.instagram.com/popular/" + URLEncoder.encode(keyword, StandardCharsets.UTF_8) + "/";
         logger.debug("Fetching Instagram keyword search {} doc_id={} query={}",
                 requestUrl, form.get("doc_id"), keyword);
+        paceInstagramRequest();
 
         Http request = Http.url(requestUrl)
                 .timeout(TIMEOUT)
@@ -1513,6 +1600,7 @@ public class InstagramRipper extends AbstractJSONRipper {
                 .ignoreHttpErrors();
         applyOptionalInstagramHeaders(request);
         Response response = request.response();
+        absorbInstagramResponse(response);
 
         int statusCode = response.statusCode();
         String body = response.body();
@@ -1610,6 +1698,7 @@ public class InstagramRipper extends AbstractJSONRipper {
         String pageUrl = "https://www.instagram.com/popular/"
                 + URLEncoder.encode(keyword, StandardCharsets.UTF_8) + "/";
         logger.info("Loading Instagram popular page for GraphQL tokens: {}", pageUrl);
+        paceInstagramRequest();
         Response response = Http.url(pageUrl)
                 .timeout(TIMEOUT)
                 .userAgent(INSTAGRAM_USER_AGENT)
@@ -1624,13 +1713,7 @@ public class InstagramRipper extends AbstractJSONRipper {
                 .ignoreContentType()
                 .ignoreHttpErrors()
                 .response();
-
-        if (response.cookies() != null && !response.cookies().isEmpty()) {
-            cookies.putAll(response.cookies());
-            if (cookies.containsKey("csrftoken")) {
-                this.csrftoken = cookies.get("csrftoken");
-            }
-        }
+        absorbInstagramResponse(response);
 
         if (response.statusCode() != 200) {
             throw new IOException("Instagram popular page HTTP " + response.statusCode()
@@ -1682,12 +1765,29 @@ public class InstagramRipper extends AbstractJSONRipper {
         if (tokens.docId == null) {
             tokens.docId = firstMatch(html, KEYWORD_SEARCH_DOC_ID_PATTERN_REV);
         }
+        tokens.profilePostsDocId = firstMatch(html, PROFILE_POSTS_DOC_ID_PATTERN);
+        if (tokens.profilePostsDocId == null) {
+            tokens.profilePostsDocId = firstMatch(html, PROFILE_POSTS_DOC_ID_PATTERN_REV);
+        }
+        tokens.profilePostsFriendlyName = firstMatch(html, PROFILE_POSTS_NAME_PATTERN);
         tokens.pageQuery = firstMatch(html, KEYWORD_SEARCH_QUERY_PATTERN);
         return tokens;
     }
 
     /** Package-private for unit tests. */
     Map<String, String> buildKeywordSearchForm(InstagramGraphqlTokens tokens, String variables) {
+        String docId = tokens.docId != null && !tokens.docId.isEmpty()
+                ? tokens.docId : GRAPHQL_DOC_ID_KEYWORD_SEARCH;
+        return buildRelayForm(tokens, GRAPHQL_FRIENDLY_NAME_KEYWORD_SEARCH, docId, variables);
+    }
+
+    /**
+     * Relay POST body Instagram's web client sends to {@code /graphql/query}.
+     * Omitting {@code lsd} and {@code fb_dtsg} makes the endpoint return the HTML app shell.
+     * Package-private for unit tests.
+     */
+    Map<String, String> buildRelayForm(InstagramGraphqlTokens tokens, String friendlyName,
+            String docId, String variables) {
         Map<String, String> form = new LinkedHashMap<>();
         form.put("av", tokens.actorId != null ? tokens.actorId : "0");
         form.put("__d", "www");
@@ -1699,11 +1799,10 @@ public class InstagramRipper extends AbstractJSONRipper {
         form.put("lsd", tokens.lsd);
         form.put("dpr", "1");
         form.put("fb_api_caller_class", "RelayModern");
-        form.put("fb_api_req_friendly_name", GRAPHQL_FRIENDLY_NAME_KEYWORD_SEARCH);
+        form.put("fb_api_req_friendly_name", friendlyName);
         form.put("variables", variables);
         form.put("server_timestamps", "true");
-        form.put("doc_id", tokens.docId != null && !tokens.docId.isEmpty()
-                ? tokens.docId : GRAPHQL_DOC_ID_KEYWORD_SEARCH);
+        form.put("doc_id", docId);
         if (tokens.clientRevision != null && !tokens.clientRevision.isEmpty()) {
             form.put("__rev", tokens.clientRevision);
         }
@@ -1738,6 +1837,8 @@ public class InstagramRipper extends AbstractJSONRipper {
         String clientRevision;
         String docId;
         String pageQuery;
+        String profilePostsDocId;
+        String profilePostsFriendlyName;
     }
 
     /**
@@ -1921,50 +2022,137 @@ public class InstagramRipper extends AbstractJSONRipper {
 
     /**
      * Paginates profile posts via Instagram's Polaris GraphQL doc_id queries.
-     * Logged-in sessions use the private-API-shaped feed connection; anonymous
-     * sessions use the classic timeline edge.
+     * The web client rejects a bare {@code doc_id} POST with the HTML app shell;
+     * the same Relay fields used for keyword search ({@code lsd}, {@code fb_dtsg},
+     * friendly name) are required. Doc ids rotate, so a value scraped from the
+     * profile HTML is tried before the known fallbacks.
      */
     private JSONObject fetchGraphqlTimelinePage(String username, String afterCursor) throws IOException {
-        String userId = getUserID(username);
         boolean loggedIn = hasCookie("sessionid");
-        String docId = loggedIn ? GRAPHQL_DOC_ID_FEED_TIMELINE : GRAPHQL_DOC_ID_PROFILE_TIMELINE;
+        String userId = null;
+        if (!loggedIn) {
+            userId = getUserID(username);
+        }
+        ensureProfileGraphqlTokens(username);
 
+        JSONObject variables = buildProfileTimelineVariables(username, userId, loggedIn, afterCursor);
+        List<String> docIds = profileTimelineDocIds(loggedIn);
+        IOException lastException = null;
+
+        for (String requestUrl : Arrays.asList(
+                "https://www.instagram.com/graphql/query",
+                "https://www.instagram.com/api/graphql")) {
+            boolean endpointRejectedShape = false;
+            for (String docId : docIds) {
+                if (endpointRejectedShape) {
+                    break;
+                }
+                String friendlyName = friendlyNameForProfileDoc(docId);
+                try {
+                    JSONObject json = postProfileTimeline(requestUrl, username, docId, friendlyName, variables);
+                    return normalizeGraphqlTimeline(json, loggedIn);
+                } catch (IOException e) {
+                    lastException = e;
+                    String message = e.getMessage() == null ? "" : e.getMessage();
+                    if (message.contains("HTML instead of JSON")) {
+                        // Wrong shape (missing lsd/fb_dtsg or a dead endpoint), not a stale doc_id.
+                        endpointRejectedShape = true;
+                    }
+                    if (e.getCause() instanceof InstagramBotBlockedException) {
+                        throw e;
+                    }
+                    logger.warn("GraphQL timeline {} doc_id={} failed for {}: {}",
+                            requestUrl, docId, username, e.getMessage());
+                }
+            }
+        }
+
+        throw lastException != null
+                ? lastException
+                : new IOException("GraphQL timeline failed for " + username);
+    }
+
+    /** Package-private for unit tests. */
+    JSONObject buildProfileTimelineVariables(String username, String userId, boolean loggedIn, String afterCursor) {
         JSONObject variables = new JSONObject();
+        JSONObject data = new JSONObject();
+        data.put("count", 12);
+        data.put("include_relationship_info", true);
+        data.put("latest_besties_reel_media", true);
+        data.put("latest_reel_media", true);
+        variables.put("data", data);
         if (loggedIn) {
-            JSONObject data = new JSONObject();
-            data.put("count", 12);
-            data.put("include_relationship_info", true);
-            data.put("latest_besties_reel_media", true);
-            data.put("latest_reel_media", true);
-            variables.put("data", data);
             variables.put("username", username);
+            variables.put("__relay_internal__pv__PolarisIsLoggedInrelayprovider", true);
         } else {
             variables.put("id", userId);
+            variables.put("__relay_internal__pv__PolarisIsLoggedInrelayprovider", false);
         }
         variables.put("after", afterCursor != null ? afterCursor : JSONObject.NULL);
         variables.put("before", JSONObject.NULL);
         variables.put("first", 12);
         variables.put("last", JSONObject.NULL);
         variables.put("__relay_internal__pv__PolarisFeedShareMenurelayprovider", false);
+        return variables;
+    }
 
-        Map<String, String> form = new HashMap<>();
-        form.put("variables", variables.toString());
-        form.put("doc_id", docId);
-        form.put("server_timestamps", "true");
+    private List<String> profileTimelineDocIds(boolean loggedIn) {
+        List<String> docIds = new ArrayList<>();
+        if (profileTokens != null && profileTokens.profilePostsDocId != null
+                && !profileTokens.profilePostsDocId.isEmpty()) {
+            docIds.add(profileTokens.profilePostsDocId);
+        }
+        if (loggedIn) {
+            docIds.add(GRAPHQL_DOC_ID_PROFILE_POSTS);
+            docIds.add(GRAPHQL_DOC_ID_FEED_TIMELINE);
+            docIds.add(GRAPHQL_DOC_ID_PROFILE_TIMELINE);
+        } else {
+            docIds.add(GRAPHQL_DOC_ID_PROFILE_TIMELINE);
+            docIds.add(GRAPHQL_DOC_ID_PROFILE_POSTS);
+        }
+        List<String> unique = new ArrayList<>();
+        for (String docId : docIds) {
+            if (docId != null && !docId.isEmpty() && !unique.contains(docId)) {
+                unique.add(docId);
+            }
+        }
+        return unique;
+    }
 
-        String requestUrl = "https://www.instagram.com/graphql/query";
-        logger.debug("Fetching Instagram GraphQL timeline doc_id={} after={}", docId, afterCursor);
+    private String friendlyNameForProfileDoc(String docId) {
+        if (profileTokens != null
+                && docId != null
+                && docId.equals(profileTokens.profilePostsDocId)
+                && profileTokens.profilePostsFriendlyName != null
+                && !profileTokens.profilePostsFriendlyName.isEmpty()) {
+            return profileTokens.profilePostsFriendlyName;
+        }
+        return GRAPHQL_FRIENDLY_NAME_PROFILE_POSTS;
+    }
+
+    private JSONObject postProfileTimeline(String requestUrl, String username, String docId,
+            String friendlyName, JSONObject variables) throws IOException {
+        boolean relay = profileTokens != null
+                && profileTokens.lsd != null && !profileTokens.lsd.isEmpty()
+                && profileTokens.fbDtsg != null && !profileTokens.fbDtsg.isEmpty();
+        Map<String, String> form = relay
+                ? buildRelayForm(profileTokens, friendlyName, docId, variables.toString())
+                : legacyGraphqlForm(docId, variables.toString());
+
+        logger.debug("Fetching Instagram GraphQL timeline {} doc_id={} relay={}", requestUrl, docId, relay);
+        paceInstagramRequest();
 
         Http request = Http.url(requestUrl)
+                .timeout(TIMEOUT)
                 .method(Method.POST)
                 .data(form)
                 .userAgent(INSTAGRAM_USER_AGENT)
                 .header("Accept", "*/*")
                 .header("Accept-Language", "en-US,en;q=0.9")
                 .header("X-IG-App-ID", INSTAGRAM_APP_ID)
-                .header("X-Requested-With", "XMLHttpRequest")
                 .header("X-CSRFToken", cookies.getOrDefault("csrftoken", ""))
-                .header("X-FB-LSD", cookies.getOrDefault("lsd", ""))
+                .header("X-ASBD-ID", INSTAGRAM_GRAPHQL_ASBD_ID)
+                .header("X-FB-Friendly-Name", friendlyName)
                 .header("Origin", "https://www.instagram.com")
                 .header("Referer", "https://www.instagram.com/" + username + "/")
                 .header("Sec-Fetch-Dest", "empty")
@@ -1973,20 +2161,86 @@ public class InstagramRipper extends AbstractJSONRipper {
                 .cookies(cookies)
                 .ignoreContentType()
                 .ignoreHttpErrors();
+        if (relay) {
+            request.header("X-FB-LSD", profileTokens.lsd);
+        }
         applyOptionalInstagramHeaders(request);
         Response response = request.response();
+        absorbInstagramResponse(response);
 
         int statusCode = response.statusCode();
         String body = response.body();
         if (statusCode == 429) {
+            boolean likelyBotBlock = body == null || body.trim().isEmpty();
+            if (likelyBotBlock) {
+                throw new IOException("Instagram blocked request while GraphQL timeline for " + username,
+                        new InstagramBotBlockedException(
+                                "Instagram blocked request while GraphQL timeline for " + username));
+            }
             throw new IOException("Rate limited by Instagram GraphQL pagination.");
         }
         if (statusCode != 200) {
-            throw new IOException("GraphQL timeline HTTP " + statusCode + " for " + username);
+            throw new IOException("GraphQL timeline HTTP " + statusCode + " for " + username
+                    + ". Response starts: " + summarizeBody(body));
         }
 
-        JSONObject json = parseInstagramJsonBody(body, "GraphQL timeline for " + username);
-        return normalizeGraphqlTimeline(json, loggedIn);
+        return parseInstagramJsonBody(body, "GraphQL timeline for " + username);
+    }
+
+    private Map<String, String> legacyGraphqlForm(String docId, String variables) {
+        Map<String, String> form = new LinkedHashMap<>();
+        form.put("variables", variables);
+        form.put("doc_id", docId);
+        form.put("server_timestamps", "true");
+        return form;
+    }
+
+    /**
+     * Loads {@code lsd}/{@code fb_dtsg} and any posts {@code doc_id} from the profile HTML,
+     * and keeps a timeline if the page already embedded one.
+     */
+    private void ensureProfileGraphqlTokens(String username) {
+        if (profileTokensAttempted) {
+            return;
+        }
+        profileTokensAttempted = true;
+
+        String pageUrl = "https://www.instagram.com/" + username + "/";
+        try {
+            Response response = loadInstagramDocument(pageUrl, "https://www.instagram.com/");
+            String html = response.body();
+            if (html == null || html.isBlank()) {
+                logger.warn("Empty Instagram profile page for {}", username);
+                return;
+            }
+            String lower = html.toLowerCase(Locale.ROOT);
+            if (lower.contains("/accounts/login")
+                    || lower.contains("checkpoint_required")
+                    || lower.contains("challenge_required")) {
+                logger.warn("Instagram profile page for {} is a login/challenge wall", username);
+            }
+
+            profileTokens = parseGraphqlTokens(html);
+            if (profileTokens.actorId == null || profileTokens.actorId.isEmpty()) {
+                profileTokens.actorId = cookies.getOrDefault("ds_user_id", "0");
+            }
+            if (profileTokens.lsd == null || profileTokens.lsd.isEmpty()
+                    || profileTokens.fbDtsg == null || profileTokens.fbDtsg.isEmpty()) {
+                logger.warn("Profile page for {} did not include lsd/fb_dtsg. GraphQL may return HTML.", username);
+            } else if (profileTokens.profilePostsDocId != null) {
+                logger.info("Loaded Instagram profile GraphQL tokens (doc_id={} name={})",
+                        profileTokens.profilePostsDocId, profileTokens.profilePostsFriendlyName);
+            } else {
+                logger.info("Loaded Instagram profile GraphQL tokens (lsd=true dtsg=true)");
+            }
+
+            bootstrappedProfileTimeline = timelineFromProfileHtml(html);
+            if (bootstrappedProfileTimeline != null) {
+                logger.info("Profile HTML for {} includes an embedded timeline", username);
+            }
+        } catch (IOException e) {
+            logger.warn("Failed to load Instagram profile page for {}: {}", username, e.getMessage());
+        }
     }
 
     /**
@@ -2002,8 +2256,10 @@ public class InstagramRipper extends AbstractJSONRipper {
 
         // Login walls / blocked anonymous queries often return {"data":{"user":null}}.
         // optJSONObject returns null for JSON null; has("user") is still true.
+        // PolarisProfilePostsQuery puts media on the feed connection and may omit user.
         JSONObject userNode = data.optJSONObject("user");
-        if (data.has("user") && userNode == null) {
+        JSONObject connection = data.optJSONObject("xdt_api__v1__feed__user_timeline_graphql_connection");
+        if (data.has("user") && userNode == null && connection == null) {
             throw new IOException("Instagram returned empty user data — log into Firefox and fully quit "
                     + "so sessionid is available. GraphQL timeline had null user"
                     + (loggedIn ? " despite sessionid." : " (no sessionid cookie)."));
@@ -2017,7 +2273,6 @@ public class InstagramRipper extends AbstractJSONRipper {
             }
         }
 
-        JSONObject connection = data.optJSONObject("xdt_api__v1__feed__user_timeline_graphql_connection");
         if (connection == null) {
             // Some logged-out responses still nest under user even when we used the feed doc_id.
             if (userNode != null && userNode.has("edge_owner_to_timeline_media")) {
@@ -2109,6 +2364,198 @@ public class InstagramRipper extends AbstractJSONRipper {
                 sendUpdate(RipStatusMessage.STATUS.DOWNLOAD_COMPLETE_HISTORY, message);
             }
         }
+    }
+
+    private static void paceInstagramRequest() {
+        synchronized (INSTAGRAM_PACE_LOCK) {
+            long now = System.currentTimeMillis();
+            long wait = instagramNextRequestMillis - now;
+            if (wait > 0) {
+                Utils.sleep(wait);
+            }
+            instagramNextRequestMillis = System.currentTimeMillis() + INSTAGRAM_MIN_INTERVAL_MS;
+        }
+    }
+
+    private String wwwClaim() {
+        String claim = cookies.get("ig_www_claim");
+        if (claim == null || claim.isEmpty()) {
+            return "0";
+        }
+        return claim;
+    }
+
+    private void absorbInstagramResponse(Response response) {
+        if (response == null) {
+            return;
+        }
+        if (response.cookies() != null && !response.cookies().isEmpty()) {
+            cookies.putAll(response.cookies());
+            String csrf = cookies.get("csrftoken");
+            if (csrf != null && !csrf.isEmpty()) {
+                this.csrftoken = csrf;
+            }
+        }
+        Map<String, String> headers = response.headers();
+        if (headers == null) {
+            return;
+        }
+        String claim = firstHeader(headers, "x-ig-set-www-claim", "ig-set-www-claim");
+        if (claim != null && !claim.isEmpty() && !"0".equals(claim)) {
+            cookies.put("ig_www_claim", claim);
+        }
+    }
+
+    private Response loadInstagramDocument(String pageUrl, String referer) throws IOException {
+        paceInstagramRequest();
+        Response response = Http.url(pageUrl)
+                .timeout(TIMEOUT)
+                .userAgent(INSTAGRAM_USER_AGENT)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", "en-US,en;q=0.9")
+                .header("Referer", referer)
+                .header("Sec-Fetch-Dest", "document")
+                .header("Sec-Fetch-Mode", "navigate")
+                .header("Sec-Fetch-Site", "same-origin")
+                .header("Sec-Fetch-User", "?1")
+                .header("Upgrade-Insecure-Requests", "1")
+                .cookies(cookies)
+                .ignoreContentType()
+                .ignoreHttpErrors()
+                .response();
+        absorbInstagramResponse(response);
+        if (response.statusCode() != 200) {
+            throw new IOException("Instagram page HTTP " + response.statusCode() + " for " + pageUrl);
+        }
+        return response;
+    }
+
+    /**
+     * Pulls a first-page timeline out of profile HTML when Instagram embeds
+     * {@code xdt_api__v1__feed__user_timeline_graphql_connection} or the classic
+     * {@code edge_owner_to_timeline_media} edges. Package-private for unit tests.
+     */
+    JSONObject timelineFromProfileHtml(String html) {
+        if (html == null || html.isEmpty()) {
+            return null;
+        }
+        try {
+            Document doc = Jsoup.parse(html);
+            for (Element script : doc.select("script")) {
+                JSONObject timeline = timelineFromJsonText(script.data());
+                if (timeline != null) {
+                    return timeline;
+                }
+            }
+        } catch (RuntimeException e) {
+            logger.debug("Failed to scan profile HTML scripts: {}", e.getMessage());
+        }
+        return timelineFromJsonText(html);
+    }
+
+    private JSONObject timelineFromJsonText(String text) {
+        if (text == null || text.isEmpty()) {
+            return null;
+        }
+        String trimmed = text.trim();
+        if (trimmed.startsWith("{")) {
+            JSONObject direct = tryTimelineJson(trimmed);
+            if (direct != null) {
+                return direct;
+            }
+        }
+        int from = 0;
+        for (int attempt = 0; attempt < 6; attempt++) {
+            int key = indexOfTimelineKey(text, from);
+            if (key < 0) {
+                return null;
+            }
+            int dataKey = text.lastIndexOf("\"data\"", key);
+            int start = dataKey >= 0 ? text.lastIndexOf('{', dataKey) : text.lastIndexOf('{', key);
+            if (start >= 0) {
+                JSONObject timeline = tryTimelineJson(extractBalancedJson(text, start));
+                if (timeline != null) {
+                    return timeline;
+                }
+            }
+            from = key + 1;
+        }
+        return null;
+    }
+
+    private JSONObject tryTimelineJson(String jsonText) {
+        if (jsonText == null || jsonText.isEmpty() || jsonText.charAt(0) != '{') {
+            return null;
+        }
+        JSONObject json;
+        try {
+            json = new JSONObject(jsonText);
+        } catch (JSONException e) {
+            return null;
+        }
+        for (boolean loggedInShape : new boolean[] {true, false}) {
+            try {
+                JSONObject normalized = normalizeGraphqlTimeline(json, loggedInShape);
+                if (timelineHasMedia(normalized)) {
+                    return normalized;
+                }
+            } catch (IOException ignored) {
+                // Try the other timeline shape.
+            }
+        }
+        return null;
+    }
+
+    private static int indexOfTimelineKey(String text, int from) {
+        int connection = text.indexOf("\"xdt_api__v1__feed__user_timeline_graphql_connection\"", from);
+        int classic = text.indexOf("\"edge_owner_to_timeline_media\"", from);
+        if (connection < 0) {
+            return classic;
+        }
+        if (classic < 0) {
+            return connection;
+        }
+        return Math.min(connection, classic);
+    }
+
+    /** Package-private for unit tests. */
+    static String extractBalancedJson(String text, int start) {
+        if (text == null || start < 0 || start >= text.length() || text.charAt(start) != '{') {
+            return null;
+        }
+        int depth = 0;
+        boolean inString = false;
+        boolean escape = false;
+        for (int i = start; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (inString) {
+                if (escape) {
+                    escape = false;
+                    continue;
+                }
+                if (c == '\\') {
+                    escape = true;
+                    continue;
+                }
+                if (c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+                continue;
+            }
+            if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    return text.substring(start, i + 1);
+                }
+            }
+        }
+        return null;
     }
 
     private static class InstagramBotBlockedException extends IOException {
