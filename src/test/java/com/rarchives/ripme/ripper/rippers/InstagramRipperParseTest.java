@@ -270,6 +270,88 @@ public class InstagramRipperParseTest {
     }
 
     @Test
+    void extractsProfilePostsDocIdFromHtml() throws Exception {
+        String html = "<script>{\"params\":{\"id\":\"34579740524958711\",\"name\":\"PolarisProfilePostsQuery\"}}</script>";
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/"));
+        InstagramRipper.InstagramGraphqlTokens tokens = ripper.parseGraphqlTokens(html);
+        assertEquals("34579740524958711", tokens.profilePostsDocId);
+        assertEquals("PolarisProfilePostsQuery", tokens.profilePostsFriendlyName);
+    }
+
+    @Test
+    void profileRelayFormIncludesLsdDtsgAndPostsDocId() throws Exception {
+        InstagramRipper.InstagramGraphqlTokens tokens = new InstagramRipper.InstagramGraphqlTokens();
+        tokens.lsd = "lsdTestToken";
+        tokens.fbDtsg = "abc";
+        tokens.actorId = "17841400000000000";
+        tokens.clientRevision = "1045582935";
+
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/"));
+        java.util.Map<String, String> form = ripper.buildRelayForm(
+                tokens, "PolarisProfilePostsQuery", "34579740524958711", "{\"username\":\"testuser\"}");
+
+        assertEquals("lsdTestToken", form.get("lsd"));
+        assertEquals("abc", form.get("fb_dtsg"));
+        assertEquals(InstagramRipper.computeJazoest("abc"), form.get("jazoest"));
+        assertEquals("PolarisProfilePostsQuery", form.get("fb_api_req_friendly_name"));
+        assertEquals("34579740524958711", form.get("doc_id"));
+        assertEquals("RelayModern", form.get("fb_api_caller_class"));
+    }
+
+    @Test
+    void loggedInTimelineVariablesUseUsername() throws Exception {
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/"));
+        JSONObject variables = ripper.buildProfileTimelineVariables("testuser", null, true, null);
+        assertEquals("testuser", variables.getString("username"));
+        assertEquals(12, variables.getInt("first"));
+        assertTrue(variables.isNull("after"));
+        assertTrue(variables.getBoolean("__relay_internal__pv__PolarisIsLoggedInrelayprovider"));
+        assertTrue(variables.getJSONObject("data").getBoolean("include_relationship_info"));
+    }
+
+    @Test
+    void normalizeGraphqlTimelineAcceptsNullUserWhenConnectionPresent() throws Exception {
+        JSONObject node = new JSONObject();
+        node.put("media_type", 1);
+        node.put("code", "ABC123");
+        node.put("image_versions2", new JSONObject().put("candidates", new JSONArray()
+                .put(new JSONObject().put("url", "https://example.com/p.jpg"))));
+        JSONObject connection = new JSONObject();
+        connection.put("edges", new JSONArray().put(new JSONObject().put("node", node)));
+        connection.put("page_info", new JSONObject().put("has_next_page", false));
+        JSONObject data = new JSONObject();
+        data.put("user", JSONObject.NULL);
+        data.put("xdt_api__v1__feed__user_timeline_graphql_connection", connection);
+
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/"));
+        JSONObject normalized = ripper.normalizeGraphqlTimeline(new JSONObject().put("data", data), true);
+        List<String> urls = ripper.getURLsFromJSON(normalized);
+        assertEquals(1, urls.size());
+        assertEquals("https://example.com/p.jpg", urls.get(0));
+    }
+
+    @Test
+    void timelineFromProfileHtmlReadsEmbeddedPosts() throws Exception {
+        String html = "<html><script type=\"application/json\">{\"data\":{"
+                + "\"xdt_api__v1__feed__user_timeline_graphql_connection\":{"
+                + "\"edges\":[{\"node\":{\"media_type\":1,\"code\":\"ABC\","
+                + "\"image_versions2\":{\"candidates\":[{\"url\":\"https://example.com/embedded.jpg\"}]}}}],"
+                + "\"page_info\":{\"has_next_page\":false}}}}</script></html>";
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/"));
+        JSONObject timeline = ripper.timelineFromProfileHtml(html);
+        List<String> urls = ripper.getURLsFromJSON(timeline);
+        assertEquals(1, urls.size());
+        assertEquals("https://example.com/embedded.jpg", urls.get(0));
+    }
+
+    @Test
+    void appShellHtmlHasNoTimeline() throws Exception {
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/"));
+        String html = "<!DOCTYPE html><html class=\"_9dls _ar44\"><head><title>Instagram</title></head></html>";
+        assertTrue(ripper.timelineFromProfileHtml(html) == null);
+    }
+
+    @Test
     void parsesGraphqlBodyWithFacebookAntiHijackPrefix() throws Exception {
         InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/"));
         JSONObject json = ripper.parseInstagramJsonBody(
