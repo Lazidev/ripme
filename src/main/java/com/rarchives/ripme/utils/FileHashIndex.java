@@ -9,21 +9,22 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 import java.util.Locale;
 
 /**
  * Shared index of SHA-256 file hashes stored in {@code hash_history.txt}.
  * <p>
  * Each ripper used to copy every hex line into its own {@code HashSet} of strings
- * (about 60 MB of text, several times that as Java objects). One table of the raw
- * 32-byte digests is enough, and concurrent rips now see each other's new hashes.
+ * (about 60 MB of text, several times that as Java objects). One shared table of 16-byte
+ * prefixes is enough, and concurrent rips now see each other's new hashes.
  */
 public final class FileHashIndex {
 
     private static final Logger logger = LogManager.getLogger(FileHashIndex.class);
     private static final FileHashIndex INSTANCE = new FileHashIndex();
 
-    private Byte32Set digests = new Byte32Set();
+    private Byte16Set digests = new Byte16Set();
     private Path indexedPath;
     private long indexedLength = -1L;
     private long indexedModified = -1L;
@@ -44,7 +45,7 @@ public final class FileHashIndex {
         if (key == null) {
             return true;
         }
-        return INSTANCE.addNew(file, hexHash.trim().toLowerCase(Locale.ROOT), key);
+        return INSTANCE.addNew(file, hexHash.trim().toLowerCase(Locale.ROOT), Arrays.copyOf(key, 16));
     }
 
     static void clear() {
@@ -52,7 +53,7 @@ public final class FileHashIndex {
     }
 
     private synchronized void reset() {
-        digests = new Byte32Set();
+        digests = new Byte16Set();
         indexedPath = null;
         indexedLength = -1L;
         indexedModified = -1L;
@@ -98,7 +99,7 @@ public final class FileHashIndex {
     }
 
     private void loadAll(Path path) throws IOException {
-        Byte32Set loadedDigests = new Byte32Set();
+        Byte16Set loadedDigests = new Byte16Set();
         long length = Files.exists(path) ? Files.size(path) : 0L;
         if (length >= 1024L * 1024L) {
             logger.info("Indexing file-hash history ({} MB)", length / (1024L * 1024L));
@@ -109,7 +110,7 @@ public final class FileHashIndex {
                 while ((line = reader.readLine()) != null) {
                     byte[] key = decodeHex(line.trim());
                     if (key != null) {
-                        loadedDigests.add(key);
+                        loadedDigests.add(Arrays.copyOf(key, 16));
                     }
                 }
             }

@@ -1,43 +1,41 @@
 package com.rarchives.ripme.utils;
 
 /**
- * Open-addressed set of 32-byte keys.
+ * Open-addressed set of 16-byte keys.
  * <p>
- * Used for URL and file-hash history so millions of entries stay in a compact table
- * instead of one {@link String} object per line. Not thread-safe; callers synchronize.
+ * History entries are stored as the first 16 bytes of a SHA-256. Two longs per slot
+ * is half the memory of the full 32-byte digest, and a collision at that width is
+ * not a practical concern for the history sizes RipMe keeps. Not thread-safe;
+ * callers synchronize.
  */
-final class Byte32Set {
+final class Byte16Set {
 
     private long[] table;
     private int capacity;
     private int size;
     private boolean hasZero;
 
-    Byte32Set() {
+    Byte16Set() {
         capacity = 16;
-        table = new long[capacity * 4];
+        table = new long[capacity * 2];
     }
 
     boolean contains(byte[] key) {
         long w0 = word(key, 0);
         long w1 = word(key, 8);
-        long w2 = word(key, 16);
-        long w3 = word(key, 24);
-        if (w0 == 0L && w1 == 0L && w2 == 0L && w3 == 0L) {
+        if (w0 == 0L && w1 == 0L) {
             return hasZero;
         }
         int mask = capacity - 1;
         int slot = bucket(w0, mask);
         while (true) {
-            int base = slot * 4;
+            int base = slot * 2;
             long a = table[base];
             long b = table[base + 1];
-            long c = table[base + 2];
-            long d = table[base + 3];
-            if (a == 0L && b == 0L && c == 0L && d == 0L) {
+            if (a == 0L && b == 0L) {
                 return false;
             }
-            if (a == w0 && b == w1 && c == w2 && d == w3) {
+            if (a == w0 && b == w1) {
                 return true;
             }
             slot = (slot + 1) & mask;
@@ -48,9 +46,7 @@ final class Byte32Set {
     boolean add(byte[] key) {
         long w0 = word(key, 0);
         long w1 = word(key, 8);
-        long w2 = word(key, 16);
-        long w3 = word(key, 24);
-        if (w0 == 0L && w1 == 0L && w2 == 0L && w3 == 0L) {
+        if (w0 == 0L && w1 == 0L) {
             if (hasZero) {
                 return false;
             }
@@ -59,7 +55,7 @@ final class Byte32Set {
             return true;
         }
         ensureCapacity();
-        return insertNew(w0, w1, w2, w3);
+        return insertNew(w0, w1);
     }
 
     int size() {
@@ -76,52 +72,44 @@ final class Byte32Set {
         }
         long[] old = table;
         capacity *= 2;
-        table = new long[capacity * 4];
-        for (int base = 0; base < old.length; base += 4) {
+        table = new long[capacity * 2];
+        for (int base = 0; base < old.length; base += 2) {
             long a = old[base];
             long b = old[base + 1];
-            long c = old[base + 2];
-            long d = old[base + 3];
-            if (a != 0L || b != 0L || c != 0L || d != 0L) {
-                place(a, b, c, d);
+            if (a != 0L || b != 0L) {
+                place(a, b);
             }
         }
     }
 
-    private boolean insertNew(long w0, long w1, long w2, long w3) {
+    private boolean insertNew(long w0, long w1) {
         int mask = capacity - 1;
         int slot = bucket(w0, mask);
         while (true) {
-            int base = slot * 4;
+            int base = slot * 2;
             long a = table[base];
             long b = table[base + 1];
-            long c = table[base + 2];
-            long d = table[base + 3];
-            if (a == 0L && b == 0L && c == 0L && d == 0L) {
+            if (a == 0L && b == 0L) {
                 table[base] = w0;
                 table[base + 1] = w1;
-                table[base + 2] = w2;
-                table[base + 3] = w3;
                 size++;
                 return true;
             }
-            if (a == w0 && b == w1 && c == w2 && d == w3) {
+            if (a == w0 && b == w1) {
                 return false;
             }
             slot = (slot + 1) & mask;
         }
     }
 
-    private void place(long w0, long w1, long w2, long w3) {
+    private void place(long w0, long w1) {
         int mask = capacity - 1;
         int slot = bucket(w0, mask);
         while (true) {
-            int base = slot * 4;
-            if (table[base] == 0L && table[base + 1] == 0L && table[base + 2] == 0L && table[base + 3] == 0L) {
+            int base = slot * 2;
+            if (table[base] == 0L && table[base + 1] == 0L) {
                 table[base] = w0;
                 table[base + 1] = w1;
-                table[base + 2] = w2;
-                table[base + 3] = w3;
                 return;
             }
             slot = (slot + 1) & mask;
@@ -135,8 +123,8 @@ final class Byte32Set {
     }
 
     private static long word(byte[] key, int offset) {
-        if (key == null || key.length != 32) {
-            throw new IllegalArgumentException("key must be 32 bytes");
+        if (key == null || key.length != 16) {
+            throw new IllegalArgumentException("key must be 16 bytes");
         }
         return ((long) key[offset] & 0xffL) << 56
                 | ((long) key[offset + 1] & 0xffL) << 48

@@ -70,6 +70,7 @@ import org.json.JSONException;
 
 import com.rarchives.ripme.ripper.AbstractRipper;
 import com.rarchives.ripme.uiUtils.ContextActionProtections;
+import com.rarchives.ripme.utils.HeapPolicy;
 import com.rarchives.ripme.utils.RipUtils;
 import com.rarchives.ripme.utils.Utils;
 
@@ -2906,13 +2907,13 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     }
 
     /**
-     * G1 only collects when the heap is under allocation pressure. After a rip, the process
-     * often sits idle on a multi-gigabyte heap of short-lived history scans. A full collection
-     * returns that memory to the OS. Skipped when the committed heap is already modest.
+     * After a rip, ask G1 to return unused regions. The default free-heap ratio keeps
+     * hundreds of megabytes committed once the heap has grown.
      */
     private void releaseIdleHeap() {
+        HeapPolicy.apply();
         long committed = Runtime.getRuntime().totalMemory();
-        if (committed < 768L * 1024L * 1024L) {
+        if (committed < 256L * 1024L * 1024L) {
             return;
         }
         if (!idleGcScheduled.compareAndSet(false, true)) {

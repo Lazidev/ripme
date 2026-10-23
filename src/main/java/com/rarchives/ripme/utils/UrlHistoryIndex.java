@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
 
 /**
  * Answers "has this URL already been downloaded?" from one shared digest table.
@@ -26,7 +27,7 @@ public final class UrlHistoryIndex {
     private static final UrlHistoryIndex INSTANCE = new UrlHistoryIndex();
 
     private final MessageDigest digest;
-    private Byte32Set digests = new Byte32Set();
+    private Byte16Set digests = new Byte16Set();
     private Path indexedPath;
     private long indexedLength = -1L;
     private long indexedModified = -1L;
@@ -67,7 +68,7 @@ public final class UrlHistoryIndex {
     }
 
     private synchronized void reset() {
-        digests = new Byte32Set();
+        digests = new Byte16Set();
         indexedPath = null;
         indexedLength = -1L;
         indexedModified = -1L;
@@ -116,7 +117,7 @@ public final class UrlHistoryIndex {
     }
 
     private void loadAll(Path path) throws IOException {
-        Byte32Set loadedDigests = new Byte32Set();
+        Byte16Set loadedDigests = new Byte16Set();
         long length = currentLength(path);
         if (length >= 1024L * 1024L) {
             logger.info("Indexing URL history ({} MB) for duplicate checks", length / (1024L * 1024L));
@@ -143,7 +144,7 @@ public final class UrlHistoryIndex {
     private byte[] sha256(String line) {
         digest.reset();
         digest.update(line.getBytes(StandardCharsets.UTF_8));
-        return digest.digest();
+        return Arrays.copyOf(digest.digest(), 16);
     }
 
     private static long currentLength(Path path) throws IOException {

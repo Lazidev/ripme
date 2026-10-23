@@ -34,6 +34,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.stream.Stream;
 import com.rarchives.ripme.utils.LoggingConfig;
+import com.rarchives.ripme.utils.HeapPolicy;
 
 /**
  * Entry point to application.
@@ -54,6 +55,8 @@ public class App {
      * @param args Array of command line arguments.
      */
     public static void main(String[] args) throws IOException {
+        HeapPolicy.relaunchIfUnbounded(args);
+        HeapPolicy.apply();
         LoggingConfig.setup();  // <-- Enable logging format with timestamp
         Utils.deleteArchivedLogs();
         Runtime.getRuntime().addShutdownHook(
