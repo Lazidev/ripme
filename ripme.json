@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.306-1-3dde5c5",
-  "currentHash": "d8ea222b7a9b337d47dcf46862d3482cfdd1dd976e302d931913a6177b23ba38",
+  "latestVersion": "2.1.307-1-05f5bfe",
+  "currentHash": "847e309d676b19de177a04d2135175fd18b215f7294a9216a4e012789b52d0a5",
   "changeList": [
+    "2.1.307-1-05f5bfe: Refactor memory management by replacing Byte32Set with Byte16Set in FileHashIndex and UrlHistoryIndex. Enhance heap management in App and MainWindow with HeapPolicy integration. Remove unused Byte32Set class and its associated tests.",
+    "2.1.307-1-05f5bfe: Built at 2026-10-23T19:09:34Z",
     "2.1.306-1-3dde5c5: Refactor AbstractRipper to remove hash history management and integrate FileHashIndex and UrlHistoryIndex for improved download tracking. Enhance MainWindow with log management and idle heap release functionality to optimize memory usage.",
     "2.1.306-1-3dde5c5: Built at 2026-10-23T17:46:22Z",
     "2.1.305-1-ae0b739: PR #147 - Fix Instagram profile rips that return the HTML shell and empty 429s (https://github.com/Lazidev/ripme/pull/147) — <!-- CURSOR_AGENT_PR_BODY_BEGIN --> # Category",
