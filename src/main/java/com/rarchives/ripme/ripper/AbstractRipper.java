@@ -3,7 +3,6 @@ package com.rarchives.ripme.ripper;
 import java.awt.Desktop;
 import java.io.BufferedWriter;
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.lang.reflect.Constructor;
@@ -14,17 +13,11 @@ import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Observable;
 import java.util.Random;
-import java.util.Scanner;
-import java.util.Set;
-import java.util.stream.Stream;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.logging.log4j.LogManager;
@@ -38,6 +31,8 @@ import com.rarchives.ripme.ui.RipStatusMessage;
 import com.rarchives.ripme.ui.RipStatusMessage.STATUS;
 import com.rarchives.ripme.utils.ConsecutiveHttpFailureTracker;
 import com.rarchives.ripme.utils.DownloadLimitTracker;
+import com.rarchives.ripme.utils.FileHashIndex;
+import com.rarchives.ripme.utils.UrlHistoryIndex;
 import com.rarchives.ripme.utils.Utils;
 
 // Suppress warning for specifically Observable. Hopefully no other deprecations
@@ -91,10 +86,6 @@ public abstract class AbstractRipper
             new ConsecutiveHttpFailureTracker(httpFailureThreshold);
     private final AtomicBoolean circuitBroken = new AtomicBoolean(false);
     private final AtomicBoolean rateLimitNotified = new AtomicBoolean(false);
-
-    private final Set<String> knownHashes = Collections.synchronizedSet(new HashSet<>());
-    private volatile boolean hashHistoryLoaded = false;
-    private final Object hashHistoryLock = new Object();
 
     public void stop() {
         logger.trace("stop()");
@@ -264,6 +255,11 @@ public abstract class AbstractRipper
             fw = new FileWriter(file.getAbsoluteFile(), true);
             bw = new BufferedWriter(fw);
             bw.write(downloadedURL);
+            bw.close();
+            bw = null;
+            fw.close();
+            fw = null;
+            UrlHistoryIndex.remember(file.toPath(), downloadedURL);
         } catch (IOException e) {
             e.printStackTrace();
         } finally {
@@ -278,49 +274,11 @@ public abstract class AbstractRipper
         }
     }
 
-    private void ensureHashHistoryLoaded() {
-        if (hashHistoryLoaded) {
-            return;
-        }
-        synchronized (hashHistoryLock) {
-            if (hashHistoryLoaded) {
-                return;
-            }
-            Path historyPath = Paths.get(hashHistoryFile);
-            if (Files.exists(historyPath)) {
-                try (Stream<String> lines = Files.lines(historyPath)) {
-                    lines.map(String::trim)
-                            .filter(line -> !line.isEmpty())
-                            .forEach(knownHashes::add);
-                } catch (IOException e) {
-                    logger.warn("Failed to load hash history from {}: {}", historyPath, e.getMessage());
-                }
-            }
-            hashHistoryLoaded = true;
-        }
-    }
-
-    private void writeDownloadedHash(String hash) {
-        synchronized (hashHistoryLock) {
-            Path historyPath = Paths.get(hashHistoryFile);
-            try {
-                if (historyPath.getParent() != null) {
-                    Files.createDirectories(historyPath.getParent());
-                }
-                Files.writeString(historyPath, hash + System.lineSeparator(),
-                        StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-            } catch (IOException e) {
-                logger.warn("Failed to append hash {} to {}: {}", hash, historyPath, e.getMessage());
-            }
-        }
-    }
-
     public boolean registerDownloadHash(Path file) {
         if (Utils.getConfigBoolean("download.allow_duplicates", false)
                 || Utils.getConfigBoolean("file.overwrite", false)) {
             return true;
         }
-        ensureHashHistoryLoaded();
         String hash;
         try {
             hash = Utils.sha256(file);
@@ -328,14 +286,7 @@ public abstract class AbstractRipper
             logger.warn("Unable to hash {}: {}", Utils.removeCWD(file), e.getMessage());
             return true;
         }
-        synchronized (hashHistoryLock) {
-            if (knownHashes.contains(hash)) {
-                return false;
-            }
-            knownHashes.add(hash);
-            writeDownloadedHash(hash);
-        }
-        return true;
+        return FileHashIndex.addIfAbsent(Paths.get(hashHistoryFile), hash);
     }
 
     /**
@@ -355,21 +306,8 @@ public abstract class AbstractRipper
      *         Returns false if not yet downloaded.
      */
     protected boolean hasDownloadedURL(String url) {
-        File file = new File(URLHistoryFile);
         url = normalizeUrl(url);
-
-        try (Scanner scanner = new Scanner(file)) {
-            while (scanner.hasNextLine()) {
-                final String lineFromFile = scanner.nextLine();
-                if (lineFromFile.equals(url)) {
-                    return true;
-                }
-            }
-        } catch (FileNotFoundException e) {
-            return false;
-        }
-
-        return false;
+        return UrlHistoryIndex.contains(Paths.get(URLHistoryFile), url);
     }
 
     /**

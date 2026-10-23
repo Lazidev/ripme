@@ -38,6 +38,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.LongSupplier;
 import java.util.regex.Matcher;
@@ -132,6 +133,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         return thread;
     });
     private final ExecutorService ripExecutor = Executors.newCachedThreadPool();
+    /** One idle collection at a time, so a burst of finished rips does not stack full GCs. */
+    private final AtomicBoolean idleGcScheduled = new AtomicBoolean(false);
     private QueueRipLauncher ripperLauncher = this::launchRipper;
 
     @FunctionalInterface
@@ -153,6 +156,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     private static JPanel emptyPanel;
 
     // Log
+    /** On-screen log only. Older lines are dropped so a long rip cannot retain every one. */
+    private static final int MAX_LOG_LINES = 5000;
     private static JButton optionLog;
     private static JPanel logPanel;
     private static JTextPane logText;
@@ -2522,12 +2527,26 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         try {
             synchronized (this) {
                 sd.insertString(sd.getLength(), text + "\n", sas);
+                trimLogDocument(sd);
             }
         } catch (BadLocationException e) {
             LOGGER.warn(e.getMessage());
         }
 
         logText.setCaretPosition(sd.getLength());
+    }
+
+    /**
+     * Drops the oldest log paragraphs once the on-screen log passes {@link #MAX_LOG_LINES}.
+     * The lines are display-only; duplicate checking still uses the history files.
+     */
+    private void trimLogDocument(StyledDocument sd) throws BadLocationException {
+        Element root = sd.getDefaultRootElement();
+        int extra = root.getElementCount() - (MAX_LOG_LINES + 1);
+        if (extra > 0) {
+            Element lastToRemove = root.getElement(extra - 1);
+            sd.remove(0, lastToRemove.getEndOffset());
+        }
     }
 
     /**
@@ -2880,7 +2899,34 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             }
             LOGGER.debug("Scheduling next rip after completion of domain {}", domain);
             ripNextAlbum();
+            if (!hasActiveDomains()) {
+                releaseIdleHeap();
+            }
         });
+    }
+
+    /**
+     * G1 only collects when the heap is under allocation pressure. After a rip, the process
+     * often sits idle on a multi-gigabyte heap of short-lived history scans. A full collection
+     * returns that memory to the OS. Skipped when the committed heap is already modest.
+     */
+    private void releaseIdleHeap() {
+        long committed = Runtime.getRuntime().totalMemory();
+        if (committed < 768L * 1024L * 1024L) {
+            return;
+        }
+        if (!idleGcScheduled.compareAndSet(false, true)) {
+            return;
+        }
+        Thread thread = new Thread(() -> {
+            try {
+                System.gc();
+            } finally {
+                idleGcScheduled.set(false);
+            }
+        }, "ripme-idle-gc");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     void setRipperLauncher(QueueRipLauncher ripperLauncher) {
