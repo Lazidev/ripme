@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.309-1-01819f7",
-  "currentHash": "0e897ab1d371e4ed1a9e4058a7a8ce566cf8da7284aef0f3b2d1c3d9b2858966",
+  "latestVersion": "2.1.310-1-52e9974",
+  "currentHash": "023837e261e97bfe97c0c3571753a79c179ed94baa1b9423e34be7bc7c3da1ec",
   "changeList": [
+    "2.1.310-1-52e9974: PR #150 - Let a queued item re-download files that URL history would skip. (https://github.com/Lazidev/ripme/pull/150) — # Category This change is exactly one of the following (please change `[ ]` to `[x]`) to indicate which:",
+    "2.1.310-1-52e9974: Built at 2026-11-06T11:40:54Z",
     "2.1.309-1-01819f7: PR #149 - Cursor/queue force prefix autostart (https://github.com/Lazidev/ripme/pull/149) — # Category This change is exactly one of the following (please change `[ ]` to `[x]`) to indicate which:",
     "2.1.309-1-01819f7: Built at 2026-11-06T11:24:18Z",
     "2.1.308-1-8fdc918: PR #148 - Give queued rips a short delay so force and a folder prefix can be se… (https://github.com/Lazidev/ripme/pull/148) — …t before they start. History re-rips are queued with force. The prefix is applied to the save folder only.",
