@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
 
@@ -109,6 +110,25 @@ public class MainWindowQueueUrlNormalizationTest {
         assertEquals("a", restored.getFolderPrefix());
         assertEquals(Integer.valueOf(10), restored.getMaxDownloads());
         assertEquals(0L, restored.getStartAfterMillis());
+
+        QueueEntry overwrite = new QueueEntry("https://example.com/c", true, 10, "a", 0L, true);
+        assertEquals("force|overwrite|prefix=a|max=10|https://example.com/c", overwrite.toConfigString());
+        QueueEntry restoredOverwrite = QueueEntry.fromConfigString(overwrite.toConfigString());
+        assertEquals(true, restoredOverwrite.isOverwriteExisting());
+        assertEquals(true, restoredOverwrite.isForceRip());
+        assertEquals("a", restoredOverwrite.getFolderPrefix());
+        assertEquals(false, QueueEntry.fromConfigString("https://example.com/d").isOverwriteExisting());
+
+        boolean configuredOverwrite = Utils.getConfigBoolean("file.overwrite", true);
+        AtomicBoolean childSawOverwrite = new AtomicBoolean(false);
+        Utils.withConfigOverride("file.overwrite", Boolean.TRUE, () -> {
+            assertTrue(Utils.getConfigBoolean("file.overwrite", false));
+            Runnable child = Utils.propagateConfigOverrides(
+                    () -> childSawOverwrite.set(Utils.getConfigBoolean("file.overwrite", false)));
+            child.run();
+        });
+        assertTrue(childSawOverwrite.get());
+        assertEquals(configuredOverwrite, Utils.getConfigBoolean("file.overwrite", !configuredOverwrite));
 
         assertEquals("", new QueueEntry("https://example.com/b", false, null, "9").getFolderPrefix());
         assertEquals("areddit_user_bob", Utils.prefixFolderName(Utils.normalizeFolderName("reddit_user_bob"), "a"));

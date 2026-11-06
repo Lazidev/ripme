@@ -226,7 +226,36 @@ public class Utils {
     }
 
     public static boolean getConfigBoolean(String key, boolean defaultValue) {
+        Object override = getConfigOverride(key);
+        if (override instanceof Boolean) {
+            return (Boolean) override;
+        }
         return config.getBoolean(key, defaultValue);
+    }
+
+    /**
+     * Runs {@code action} later with the config overrides active on the calling thread.
+     * Download workers are pooled, so a per-queue override has to travel with the task.
+     */
+    public static Runnable propagateConfigOverrides(Runnable action) {
+        Map<String, Object> captured = CONFIG_OVERRIDES.get();
+        if (action == null || captured == null || captured.isEmpty()) {
+            return action;
+        }
+        Map<String, Object> snapshot = new HashMap<>(captured);
+        return () -> {
+            Map<String, Object> previous = CONFIG_OVERRIDES.get();
+            CONFIG_OVERRIDES.set(new HashMap<>(snapshot));
+            try {
+                action.run();
+            } finally {
+                if (previous == null || previous.isEmpty()) {
+                    CONFIG_OVERRIDES.remove();
+                } else {
+                    CONFIG_OVERRIDES.set(previous);
+                }
+            }
+        };
     }
 
     public static List<String> getConfigList(String key) {

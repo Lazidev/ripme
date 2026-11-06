@@ -46,11 +46,11 @@ public class DownloadThreadPool {
      *      Thread to be added.
      */
     public void addThread(Runnable t) {
-        threadPool.execute(t);
+        threadPool.execute(Utils.propagateConfigOverrides(t));
     }
 
     public void addThread(URL url, Runnable t) {
-        threadPool.execute(wrapWithDomainLimit(url, t));
+        threadPool.execute(Utils.propagateConfigOverrides(wrapWithDomainLimit(url, t)));
     }
 
     private Runnable wrapWithDomainLimit(URL url, Runnable task) {

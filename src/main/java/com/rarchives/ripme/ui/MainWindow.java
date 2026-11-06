@@ -140,9 +140,10 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     private int queueStartGeneration;
     private static final int QUEUE_COL_URL = 0;
     private static final int QUEUE_COL_FORCE = 1;
-    private static final int QUEUE_COL_PREFIX = 2;
-    private static final int QUEUE_COL_MAX = 3;
-    private static final int QUEUE_COLUMN_COUNT = 4;
+    private static final int QUEUE_COL_OVERWRITE = 2;
+    private static final int QUEUE_COL_PREFIX = 3;
+    private static final int QUEUE_COL_MAX = 4;
+    private static final int QUEUE_COLUMN_COUNT = 5;
     private static final ScheduledExecutorService RETRY_SCHEDULER = Executors.newSingleThreadScheduledExecutor(task -> {
         Thread thread = new Thread(task, "ripme-rip-retry");
         thread.setDaemon(true);
@@ -155,7 +156,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
     @FunctionalInterface
     interface QueueRipLauncher {
-        void launch(String url, String domain, boolean forceRip, Integer maxDownloads, String folderPrefix);
+        void launch(String url, String domain, boolean forceRip, Integer maxDownloads, String folderPrefix,
+                boolean overwriteExisting);
     }
 
     private static JFrame mainFrame;
@@ -455,11 +457,11 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                         }
                         if (getActiveDomainCount(domain) >= getMaxRipsForDomain(domain)) {
                             // At capacity for this domain — put it back on the queue instead.
-                            addUrlToQueue(pausedUrl, false, null, null, false);
+                            addUrlToQueue(pausedUrl, false, null, null, false, false);
                             statusWithColor("Domain at concurrent limit; queued " + pausedUrl, Color.ORANGE);
                         } else {
                             acquireDomain(domain);
-                            ripperLauncher.launch(pausedUrl, domain, false, null, "");
+                            ripperLauncher.launch(pausedUrl, domain, false, null, "", false);
                         }
                         refreshActivePanel();
                     });
@@ -652,15 +654,15 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     }
 
     public static void addUrlToQueue(String url) {
-        addUrlToQueue(url, false, null, null, true);
+        addUrlToQueue(url, false, null, null, false, true);
     }
 
     public static void addUrlToQueue(String url, boolean forceRip) {
-        addUrlToQueue(url, forceRip, null, null, true);
+        addUrlToQueue(url, forceRip, null, null, false, true);
     }
 
     public static void addUrlToQueue(String url, boolean forceRip, Integer maxDownloads) {
-        addUrlToQueue(url, forceRip, maxDownloads, null, true);
+        addUrlToQueue(url, forceRip, maxDownloads, null, false, true);
     }
 
     /**
@@ -668,6 +670,15 @@ public final class MainWindow implements Runnable, RipStatusHandler {
      */
     static void addUrlToQueue(String url, boolean forceRip, Integer maxDownloads, String folderPrefix,
             boolean delayStart) {
+        addUrlToQueue(url, forceRip, maxDownloads, folderPrefix, false, delayStart);
+    }
+
+    /**
+     * @param overwriteExisting when true, this item re-downloads files already in URL history
+     * @param delayStart when true, the new item waits {@link #QUEUE_AUTOSTART_DELAY_MS} before it can auto-start
+     */
+    static void addUrlToQueue(String url, boolean forceRip, Integer maxDownloads, String folderPrefix,
+            boolean overwriteExisting, boolean delayStart) {
         String normalized = normalizeQueueUrl(url);
         if (normalized == null || normalized.isEmpty()) {
             return;
@@ -681,6 +692,10 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 boolean changed = false;
                 if (forceRip && !existing.isForceRip()) {
                     existing.setForceRip(true);
+                    changed = true;
+                }
+                if (overwriteExisting && !existing.isOverwriteExisting()) {
+                    existing.setOverwriteExisting(true);
                     changed = true;
                 }
                 if (!prefix.isEmpty() && !prefix.equals(existing.getFolderPrefix())) {
@@ -701,7 +716,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 return;
             }
         }
-        queueListModel.addElement(new QueueEntry(normalized, forceRip, effectiveMax, prefix, startAfter));
+        queueListModel.addElement(
+                new QueueEntry(normalized, forceRip, effectiveMax, prefix, startAfter, overwriteExisting));
     }
 
     /**
@@ -808,10 +824,13 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             QueueEntry existing = normalized.get(normalizedUrl);
             if (existing == null) {
                 normalized.put(normalizedUrl, new QueueEntry(normalizedUrl, entry.isForceRip(), entry.getMaxDownloads(),
-                        entry.getFolderPrefix(), entry.getStartAfterMillis()));
+                        entry.getFolderPrefix(), entry.getStartAfterMillis(), entry.isOverwriteExisting()));
             } else {
                 if (entry.isForceRip()) {
                     existing.setForceRip(true);
+                }
+                if (entry.isOverwriteExisting()) {
+                    existing.setOverwriteExisting(true);
                 }
                 if (existing.getFolderPrefix().isEmpty() && !entry.getFolderPrefix().isEmpty()) {
                     existing.setFolderPrefix(entry.getFolderPrefix());
@@ -905,6 +924,9 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 if (col == QUEUE_COL_FORCE) {
                     return Utils.getLocalizedString("queue.force");
                 }
+                if (col == QUEUE_COL_OVERWRITE) {
+                    return Utils.getLocalizedString("queue.overwrite");
+                }
                 if (col == QUEUE_COL_PREFIX) {
                     return Utils.getLocalizedString("queue.prefix");
                 }
@@ -913,7 +935,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
             @Override
             public Class<?> getColumnClass(int col) {
-                if (col == QUEUE_COL_FORCE) {
+                if (col == QUEUE_COL_FORCE || col == QUEUE_COL_OVERWRITE) {
                     return Boolean.class;
                 }
                 if (col == QUEUE_COL_MAX) {
@@ -924,7 +946,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
             @Override
             public boolean isCellEditable(int row, int col) {
-                return col == QUEUE_COL_FORCE || col == QUEUE_COL_PREFIX || col == QUEUE_COL_MAX;
+                return col == QUEUE_COL_FORCE || col == QUEUE_COL_OVERWRITE || col == QUEUE_COL_PREFIX
+                        || col == QUEUE_COL_MAX;
             }
 
             @Override
@@ -934,7 +957,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                     if (col == QUEUE_COL_URL || col == QUEUE_COL_PREFIX) {
                         return "";
                     }
-                    if (col == QUEUE_COL_FORCE) {
+                    if (col == QUEUE_COL_FORCE || col == QUEUE_COL_OVERWRITE) {
                         return Boolean.FALSE;
                     }
                     return Utils.getConfigInteger("maxdownloads", 250);
@@ -944,6 +967,9 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 }
                 if (col == QUEUE_COL_FORCE) {
                     return entry.isForceRip();
+                }
+                if (col == QUEUE_COL_OVERWRITE) {
+                    return entry.isOverwriteExisting();
                 }
                 if (col == QUEUE_COL_PREFIX) {
                     return entry.getFolderPrefix();
@@ -962,6 +988,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 }
                 if (col == QUEUE_COL_FORCE) {
                     entry.setForceRip(Boolean.TRUE.equals(value));
+                } else if (col == QUEUE_COL_OVERWRITE) {
+                    entry.setOverwriteExisting(Boolean.TRUE.equals(value));
                 } else if (col == QUEUE_COL_PREFIX) {
                     entry.setFolderPrefix(value == null ? "" : value.toString());
                 } else {
@@ -1404,6 +1432,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         queueTable.getColumnModel().getColumn(QUEUE_COL_URL).setPreferredWidth(300);
         queueTable.getColumnModel().getColumn(QUEUE_COL_FORCE).setPreferredWidth(50);
         queueTable.getColumnModel().getColumn(QUEUE_COL_FORCE).setMaxWidth(70);
+        queueTable.getColumnModel().getColumn(QUEUE_COL_OVERWRITE).setPreferredWidth(80);
+        queueTable.getColumnModel().getColumn(QUEUE_COL_OVERWRITE).setMaxWidth(100);
         queueTable.getColumnModel().getColumn(QUEUE_COL_PREFIX).setPreferredWidth(55);
         queueTable.getColumnModel().getColumn(QUEUE_COL_PREFIX).setMaxWidth(70);
         DefaultTableCellRenderer prefixRenderer = new DefaultTableCellRenderer();
@@ -1422,6 +1452,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 String tip = null;
                 if (viewColumn == QUEUE_COL_FORCE) {
                     tip = Utils.getLocalizedString("queue.force.tooltip");
+                } else if (viewColumn == QUEUE_COL_OVERWRITE) {
+                    tip = Utils.getLocalizedString("queue.overwrite.tooltip");
                 } else if (viewColumn == QUEUE_COL_PREFIX) {
                     tip = Utils.getLocalizedString("queue.prefix.tooltip");
                 } else if (viewColumn == QUEUE_COL_MAX) {
@@ -1447,7 +1479,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             QueueEntry entry = QueueEntry.fromConfigString(item);
             if (entry != null) {
                 addUrlToQueue(entry.getUrl(), entry.isForceRip(), entry.getMaxDownloads(), entry.getFolderPrefix(),
-                        false);
+                        entry.isOverwriteExisting(), false);
             }
         }
         normalizeAndDeduplicateQueue();
@@ -2421,7 +2453,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                     QueueEntry entry = QueueEntry.fromConfigString(line);
                     if (entry != null && entry.getUrl() != null && entry.getUrl().startsWith("http")) {
                         MainWindow.addUrlToQueue(entry.getUrl(), entry.isForceRip(), entry.getMaxDownloads(),
-                                entry.getFolderPrefix(), true);
+                                entry.getFolderPrefix(), entry.isOverwriteExisting(), true);
                     } else {
                         LOGGER.error("Skipping url " + line + " because it looks malformed (doesn't start with http)");
                     }
@@ -2766,6 +2798,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 boolean forceRip = queueEntry.isForceRip();
                 Integer maxDownloads = queueEntry.getMaxDownloads();
                 String folderPrefix = queueEntry.getFolderPrefix();
+                boolean overwriteExisting = queueEntry.isOverwriteExisting();
                 String domain = getDomainFromUrl(nextAlbum);
                 if (domain == null) {
                     queueListModel.remove(i);
@@ -2797,7 +2830,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 acquireDomain(domain);
                 LOGGER.debug("Starting queued rip for domain {} (force={}, max={}, prefix={}): {}",
                         domain, forceRip, maxDownloads, folderPrefix, nextAlbum);
-                ripperLauncher.launch(nextAlbum, domain, forceRip, maxDownloads, folderPrefix);
+                ripperLauncher.launch(nextAlbum, domain, forceRip, maxDownloads, folderPrefix, overwriteExisting);
                 started = true;
                 break;
             }
@@ -2863,8 +2896,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     }
 
     private void launchRipper(String urlString, String domain, boolean forceRip, Integer maxDownloads,
-            String folderPrefix) {
-        RipperRun ripperRun = ripAlbum(urlString, forceRip, maxDownloads, folderPrefix);
+            String folderPrefix, boolean overwriteExisting) {
+        RipperRun ripperRun = ripAlbum(urlString, forceRip, maxDownloads, folderPrefix, overwriteExisting);
         if (ripperRun == null) {
             // Domain slot was reserved by ripNextAlbum (or resume); free it and continue the queue.
             onRipperFinished(domain, null);
@@ -2885,6 +2918,10 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 }
             };
             // Keep the override on the worker thread so rippers that re-read maxdownloads mid-rip see it.
+            if (overwriteExisting) {
+                Runnable inner = run;
+                run = () -> Utils.withConfigOverride("file.overwrite", Boolean.TRUE, inner);
+            }
             if (maxDownloads != null) {
                 Utils.withConfigOverride("maxdownloads", maxDownloads, run);
             } else {
@@ -2906,6 +2943,11 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     }
 
     private RipperRun ripAlbum(String urlString, boolean forceRip, Integer maxDownloads, String folderPrefix) {
+        return ripAlbum(urlString, forceRip, maxDownloads, folderPrefix, false);
+    }
+
+    private RipperRun ripAlbum(String urlString, boolean forceRip, Integer maxDownloads, String folderPrefix,
+            boolean overwriteExisting) {
         if (!logPanel.isVisible()) {
             optionLog.doClick();
         }
@@ -2941,6 +2983,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             }
             ripper.setFolderNamePrefix(folderPrefix);
             ripper.setQueueForced(forceRip);
+            ripper.setOverwriteExisting(overwriteExisting);
             String ripUrl = normalizeQueueUrl(ripper.getURL().toExternalForm());
             if (!forceRip && Utils.getConfigBoolean("skip.already_downloaded", false) && HISTORY.hasDownloaded(ripUrl)) {
                 LOGGER.info("Skipping already downloaded URL: {}", ripUrl);
@@ -3385,7 +3428,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         RETRY_SCHEDULER.schedule(() -> SwingUtilities.invokeLater(() -> {
             // Force the rip so "skip already downloaded" does not swallow the retry of a
             // partially completed album.
-            addUrlToQueue(url, true, null, failedRipper.getFolderNamePrefix(), false);
+            addUrlToQueue(url, true, null, failedRipper.getFolderNamePrefix(), failedRipper.isOverwriteExisting(),
+                    false);
             ripNextAlbum();
         }), delayMillis, TimeUnit.MILLISECONDS);
     }

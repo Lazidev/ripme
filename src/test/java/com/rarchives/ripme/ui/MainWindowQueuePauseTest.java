@@ -25,7 +25,7 @@ public class MainWindowQueuePauseTest {
         mainWindow.getActiveDomainCounts().clear();
 
         AtomicInteger startedCount = new AtomicInteger(0);
-        mainWindow.setRipperLauncher((url, domain, forceRip, maxDownloads, folderPrefix) -> startedCount.incrementAndGet());
+        mainWindow.setRipperLauncher((url, domain, forceRip, maxDownloads, folderPrefix, overwriteExisting) -> startedCount.incrementAndGet());
 
         queue.addElement("http://example.com/first");
         mainWindow.setQueuePaused(true);
@@ -52,7 +52,7 @@ public class MainWindowQueuePauseTest {
         mainWindow.setClock(() -> now.get());
 
         List<String> started = Collections.synchronizedList(new ArrayList<>());
-        mainWindow.setRipperLauncher((url, domain, forceRip, maxDownloads, folderPrefix) ->
+        mainWindow.setRipperLauncher((url, domain, forceRip, maxDownloads, folderPrefix, overwriteExisting) ->
                 started.add(url + "|" + forceRip + "|" + folderPrefix));
 
         queue.addElement("http://ready.example/album");
