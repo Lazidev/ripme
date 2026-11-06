@@ -134,6 +134,8 @@ public final class MainWindow implements Runnable, RipStatusHandler {
      * prefix can be set without pausing the queue.
      */
     static final long QUEUE_AUTOSTART_DELAY_MS = 10_000L;
+    static final int APPROVED_MARKER_MIN_DOWNLOADS = 10;
+    static final String APPROVED_MARKER_FILENAME = ".approved";
     /** Bumped to invalidate a pending auto-start callback. */
     private int queueStartGeneration;
     private static final int QUEUE_COL_URL = 0;
@@ -2930,6 +2932,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 ripper = AbstractRipper.getRipper(url);
             }
             ripper.setFolderNamePrefix(folderPrefix);
+            ripper.setQueueForced(forceRip);
             String ripUrl = normalizeQueueUrl(ripper.getURL().toExternalForm());
             if (!forceRip && Utils.getConfigBoolean("skip.already_downloaded", false) && HISTORY.hasDownloaded(ripUrl)) {
                 LOGGER.info("Skipping already downloaded URL: {}", ripUrl);
@@ -3643,6 +3646,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 Utils.playSound("camera.wav");
             }
             saveHistory();
+            writeApprovedMarker(evt.ripper.getWorkingDir(), evt.ripper.isQueueForced(), rsc.count);
             stopButton.setEnabled(false);
             pauseButton.setEnabled(false);
             statusProgress.setValue(0);
@@ -3764,6 +3768,29 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         historyTableModel.fireTableDataChanged();
         applyHistoryFilter();
         saveHistory();
+        writeApprovedMarker(ripper.getWorkingDir(), ripper.isQueueForced(), downloaded);
+    }
+
+    /**
+     * Empty marker for downstream automation. Written only after the download count is recorded,
+     * so {@code .approved} is not included in the history totals.
+     *
+     * @return {@code true} when a forced rip downloaded enough files for the marker to exist
+     */
+    static boolean writeApprovedMarker(File workingDir, boolean queueForced, int downloadedCount) {
+        if (!queueForced || downloadedCount < APPROVED_MARKER_MIN_DOWNLOADS || workingDir == null) {
+            return false;
+        }
+        Path marker = workingDir.toPath().resolve(APPROVED_MARKER_FILENAME);
+        try {
+            if (!Files.exists(marker)) {
+                Files.createFile(marker);
+            }
+            return true;
+        } catch (IOException e) {
+            LOGGER.warn("Could not create {} in {}", APPROVED_MARKER_FILENAME, workingDir, e);
+            return false;
+        }
     }
 
     public void update(AbstractRipper ripper, RipStatusMessage message) {

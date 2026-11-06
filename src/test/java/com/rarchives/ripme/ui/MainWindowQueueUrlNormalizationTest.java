@@ -1,9 +1,12 @@
 package com.rarchives.ripme.ui;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
@@ -172,5 +175,29 @@ public class MainWindowQueueUrlNormalizationTest {
         QueueEntry entry = QueueEntry.from(MainWindow.getQueueListModel().get(0));
         assertEquals(Utils.getConfigInteger("maxdownloads", 250), entry.getEffectiveMaxDownloads());
         assertEquals(Integer.valueOf(Utils.getConfigInteger("maxdownloads", 250)), entry.getMaxDownloads());
+    }
+
+    @Test
+    public void forcedRipWritesEmptyApprovedMarkerAfterTenDownloads() throws IOException {
+        Path dir = Files.createTempDirectory("ripme-approved");
+        Path marker = dir.resolve(MainWindow.APPROVED_MARKER_FILENAME);
+        try {
+            assertFalse(MainWindow.writeApprovedMarker(dir.toFile(), true, 9));
+            assertFalse(Files.exists(marker));
+            assertFalse(MainWindow.writeApprovedMarker(dir.toFile(), false,
+                    MainWindow.APPROVED_MARKER_MIN_DOWNLOADS));
+            assertFalse(Files.exists(marker));
+
+            assertTrue(MainWindow.writeApprovedMarker(dir.toFile(), true, MainWindow.APPROVED_MARKER_MIN_DOWNLOADS));
+            assertTrue(Files.exists(marker));
+            assertEquals(0, Files.size(marker));
+
+            Files.writeString(marker, "keep");
+            assertTrue(MainWindow.writeApprovedMarker(dir.toFile(), true, 11));
+            assertEquals("keep", Files.readString(marker));
+        } finally {
+            Files.deleteIfExists(marker);
+            Files.deleteIfExists(dir);
+        }
     }
 }
