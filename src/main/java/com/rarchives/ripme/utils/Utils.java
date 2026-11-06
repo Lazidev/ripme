@@ -675,6 +675,36 @@ public class Utils {
     }
 
     /**
+     * A single ASCII letter to prepend to an album folder name, or empty when unset.
+     */
+    public static String normalizeFolderPrefix(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        String trimmed = raw.trim();
+        if (trimmed.isEmpty()) {
+            return "";
+        }
+        char c = trimmed.charAt(0);
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+            return String.valueOf(c);
+        }
+        return "";
+    }
+
+    /**
+     * Prepends a one-letter prefix to a folder name. {@code reddit_user_bob} with prefix
+     * {@code a} becomes {@code areddit_user_bob}.
+     */
+    public static String prefixFolderName(String folderName, String prefix) {
+        String letter = normalizeFolderPrefix(prefix);
+        if (letter.isEmpty() || folderName == null) {
+            return folderName;
+        }
+        return letter + folderName;
+    }
+
+    /**
      * Checks if given path already exists as lowercase
      *
      * @param path - original path entered to be ripped

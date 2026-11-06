@@ -1,8 +1,10 @@
 package com.rarchives.ripme.ui;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
@@ -90,6 +92,74 @@ public class MainWindowQueueUrlNormalizationTest {
         assertEquals(true, restoredForced.isForceRip());
         assertEquals(Integer.valueOf(10), restoredForced.getMaxDownloads());
         assertEquals("force|max=10|https://example.com/b", forcedMax.toConfigString());
+    }
+
+    @Test
+    public void folderPrefixSurvivesConfigRoundTripAndIsOneLetter() {
+        QueueEntry prefixed = new QueueEntry("https://example.com/a", true, 10, "ab");
+        assertEquals("a", prefixed.getFolderPrefix());
+        assertEquals("force|prefix=a|max=10|https://example.com/a", prefixed.toConfigString());
+
+        QueueEntry restored = QueueEntry.fromConfigString(prefixed.toConfigString());
+        assertEquals("https://example.com/a", restored.getUrl());
+        assertEquals(true, restored.isForceRip());
+        assertEquals("a", restored.getFolderPrefix());
+        assertEquals(Integer.valueOf(10), restored.getMaxDownloads());
+        assertEquals(0L, restored.getStartAfterMillis());
+
+        assertEquals("", new QueueEntry("https://example.com/b", false, null, "9").getFolderPrefix());
+        assertEquals("areddit_user_bob", Utils.prefixFolderName(Utils.normalizeFolderName("reddit_user_bob"), "a"));
+        assertEquals("reddit_user_bob", Utils.prefixFolderName("reddit_user_bob", "9"));
+        assertEquals("E:\\rips\\reddit_user_bob",
+                MainWindow.withoutFolderPrefix("E:\\rips\\areddit_user_bob", "a"));
+        assertEquals("E:/rips/reddit_user_bob/",
+                MainWindow.withoutFolderPrefix("E:/rips/areddit_user_bob/", "a"));
+        assertEquals("E:\\rips\\reddit_user_bob",
+                MainWindow.withoutFolderPrefix("E:\\rips\\reddit_user_bob", "a"));
+    }
+
+    @Test
+    public void checkedHistoryReripQueuesWithForceAndAutostartDelay() throws IOException {
+        new MainWindow(true);
+        MainWindow.getQueueListModel().clear();
+
+        HistoryEntry checked = new HistoryEntry();
+        checked.url = "https://www.reddit.com/user/bob";
+        checked.selected = true;
+        HistoryEntry ignored = new HistoryEntry();
+        ignored.url = "https://example.com/nope";
+        ignored.selected = false;
+
+        long before = System.currentTimeMillis();
+        int added = MainWindow.enqueueCheckedHistory(List.of(checked, ignored));
+        long after = System.currentTimeMillis();
+
+        assertEquals(1, added);
+        assertEquals(1, MainWindow.getQueueListModel().size());
+        QueueEntry entry = QueueEntry.from(MainWindow.getQueueListModel().get(0));
+        assertEquals("https://www.reddit.com/user/bob", entry.getUrl());
+        assertTrue(entry.isForceRip());
+        assertEquals("", entry.getFolderPrefix());
+        assertTrue(entry.getStartAfterMillis() >= before + MainWindow.QUEUE_AUTOSTART_DELAY_MS);
+        assertTrue(entry.getStartAfterMillis() <= after + MainWindow.QUEUE_AUTOSTART_DELAY_MS);
+    }
+
+    @Test
+    public void restoredQueueItemKeepsPrefixAndCanStartImmediately() throws IOException {
+        new MainWindow(true);
+        MainWindow.getQueueListModel().clear();
+
+        MainWindow.addUrlToQueue("https://example.com/restored", true, 3, "b", false);
+
+        QueueEntry entry = QueueEntry.from(MainWindow.getQueueListModel().get(0));
+        assertEquals("b", entry.getFolderPrefix());
+        assertTrue(entry.isForceRip());
+        assertEquals(Integer.valueOf(3), entry.getMaxDownloads());
+        assertEquals(0L, entry.getStartAfterMillis());
+
+        MainWindow.addUrlToQueue("https://example.com/restored", false, null, null, false);
+        assertEquals(1, MainWindow.getQueueListModel().size());
+        assertEquals("b", QueueEntry.from(MainWindow.getQueueListModel().get(0)).getFolderPrefix());
     }
 
     @Test

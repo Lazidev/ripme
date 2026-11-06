@@ -515,7 +515,7 @@ public abstract class AbstractHTMLRipper extends AbstractRipper {
         String title = getAlbumTitle(this.url);
         logger.debug("Using album title '" + title + "'");
 
-        title = Utils.normalizeFolderName(title);
+        title = albumFolderName(title);
         path += title;
         path = Utils.getOriginalDirectory(path) + File.separator;   // check for case sensitive (unix only)
 

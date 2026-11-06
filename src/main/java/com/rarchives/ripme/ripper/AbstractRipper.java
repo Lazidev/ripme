@@ -58,6 +58,8 @@ public abstract class AbstractRipper
 
     protected URL url;
     protected File workingDir;
+    /** One-letter prefix prepended to this rip's album folder. Empty when unused. */
+    private String folderNamePrefix = "";
     DownloadThreadPool threadPool;
     RipStatusHandler observer = null;
 
@@ -811,6 +813,24 @@ public abstract class AbstractRipper
         } catch (URISyntaxException e) {
             throw new MalformedURLException(e.getMessage());
         }
+    }
+
+    /**
+     * One letter prepended to the album folder for this rip, or empty.
+     */
+    public void setFolderNamePrefix(String prefix) {
+        this.folderNamePrefix = Utils.normalizeFolderPrefix(prefix);
+    }
+
+    public String getFolderNamePrefix() {
+        return folderNamePrefix == null ? "" : folderNamePrefix;
+    }
+
+    /**
+     * Album directory name, with the queue prefix prepended when one was set.
+     */
+    protected String albumFolderName(String title) {
+        return Utils.prefixFolderName(Utils.normalizeFolderName(title), folderNamePrefix);
     }
 
     /**
