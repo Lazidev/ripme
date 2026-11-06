@@ -9,11 +9,14 @@ import com.rarchives.ripme.utils.Utils;
  */
 public final class QueueEntry {
     private static final String FORCE_PREFIX = "force|";
+    private static final String OVERWRITE_PREFIX = "overwrite|";
     private static final String FOLDER_PREFIX_MARKER = "prefix=";
     private static final String MAX_PREFIX = "max=";
 
     private final String url;
     private boolean forceRip;
+    /** When true, re-download files already saved for this item. */
+    private boolean overwriteExisting;
     /** One ASCII letter prepended to the album folder name, or empty. */
     private String folderPrefix;
     /** {@code null} means use the global {@code maxdownloads} setting at rip time. */
@@ -41,8 +44,14 @@ public final class QueueEntry {
     }
 
     public QueueEntry(String url, boolean forceRip, Integer maxDownloads, String folderPrefix, long startAfterMillis) {
+        this(url, forceRip, maxDownloads, folderPrefix, startAfterMillis, false);
+    }
+
+    public QueueEntry(String url, boolean forceRip, Integer maxDownloads, String folderPrefix, long startAfterMillis,
+            boolean overwriteExisting) {
         this.url = url;
         this.forceRip = forceRip;
+        this.overwriteExisting = overwriteExisting;
         this.folderPrefix = Utils.normalizeFolderPrefix(folderPrefix);
         this.maxDownloads = maxDownloads;
         this.startAfterMillis = Math.max(0L, startAfterMillis);
@@ -58,6 +67,14 @@ public final class QueueEntry {
 
     public void setForceRip(boolean forceRip) {
         this.forceRip = forceRip;
+    }
+
+    public boolean isOverwriteExisting() {
+        return overwriteExisting;
+    }
+
+    public void setOverwriteExisting(boolean overwriteExisting) {
+        this.overwriteExisting = overwriteExisting;
     }
 
     public String getFolderPrefix() {
@@ -99,6 +116,9 @@ public final class QueueEntry {
         if (forceRip) {
             sb.append(FORCE_PREFIX);
         }
+        if (overwriteExisting) {
+            sb.append(OVERWRITE_PREFIX);
+        }
         if (folderPrefix != null && !folderPrefix.isEmpty()) {
             sb.append(FOLDER_PREFIX_MARKER).append(folderPrefix).append('|');
         }
@@ -118,12 +138,18 @@ public final class QueueEntry {
             return null;
         }
         boolean forceRip = false;
+        boolean overwriteExisting = false;
         Integer maxDownloads = null;
         String folderPrefix = "";
         while (!trimmed.isEmpty()) {
             if (trimmed.startsWith(FORCE_PREFIX)) {
                 forceRip = true;
                 trimmed = trimmed.substring(FORCE_PREFIX.length());
+                continue;
+            }
+            if (trimmed.startsWith(OVERWRITE_PREFIX)) {
+                overwriteExisting = true;
+                trimmed = trimmed.substring(OVERWRITE_PREFIX.length());
                 continue;
             }
             if (trimmed.startsWith(FOLDER_PREFIX_MARKER)) {
@@ -154,7 +180,7 @@ public final class QueueEntry {
         if (trimmed.isEmpty()) {
             return null;
         }
-        return new QueueEntry(trimmed, forceRip, maxDownloads, folderPrefix, 0L);
+        return new QueueEntry(trimmed, forceRip, maxDownloads, folderPrefix, 0L, overwriteExisting);
     }
 
     /**

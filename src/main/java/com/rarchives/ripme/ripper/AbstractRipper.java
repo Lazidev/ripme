@@ -90,6 +90,16 @@ public abstract class AbstractRipper
     private final AtomicBoolean rateLimitNotified = new AtomicBoolean(false);
     /** True when this rip was started from a queue item with Force enabled. */
     private boolean queueForced;
+    /** When true, this rip re-downloads files already in URL history and overwrites files on disk. */
+    private boolean overwriteExisting;
+
+    public void setOverwriteExisting(boolean overwriteExisting) {
+        this.overwriteExisting = overwriteExisting;
+    }
+
+    public boolean isOverwriteExisting() {
+        return overwriteExisting;
+    }
 
     public void setQueueForced(boolean queueForced) {
         this.queueForced = queueForced;

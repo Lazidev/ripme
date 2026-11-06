@@ -121,6 +121,24 @@ class QueueMenuMouseListener extends MouseAdapter {
         };
         popup.add(forceSelected);
 
+        Action overwriteSelected = new AbstractAction(Utils.getLocalizedString("queue.overwrite")) {
+            @Override
+            public void actionPerformed(ActionEvent ae) {
+                int[] selected = queueTable.getSelectedRows();
+                for (int row : selected) {
+                    QueueEntry entry = QueueEntry.from(queueListModel.get(row));
+                    if (entry != null) {
+                        entry.setOverwriteExisting(true);
+                        queueListModel.set(row, entry);
+                    }
+                }
+                fireTableDataChanged();
+                setSelectedRows(selected);
+                updateUI();
+            }
+        };
+        popup.add(overwriteSelected);
+
         Action removeSelected = new AbstractAction(Utils.getLocalizedString("queue.remove.selected")) {
             @Override
             public void actionPerformed(ActionEvent ae) {
