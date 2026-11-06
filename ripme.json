@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.308-1-8fdc918",
-  "currentHash": "af9a70c8ad611431712ccdbd41141825334b40da8d81341717d79746ef3308fa",
+  "latestVersion": "2.1.309-1-01819f7",
+  "currentHash": "0e897ab1d371e4ed1a9e4058a7a8ce566cf8da7284aef0f3b2d1c3d9b2858966",
   "changeList": [
+    "2.1.309-1-01819f7: PR #149 - Cursor/queue force prefix autostart (https://github.com/Lazidev/ripme/pull/149) — # Category This change is exactly one of the following (please change `[ ]` to `[x]`) to indicate which:",
+    "2.1.309-1-01819f7: Built at 2026-11-06T11:24:18Z",
     "2.1.308-1-8fdc918: PR #148 - Give queued rips a short delay so force and a folder prefix can be se… (https://github.com/Lazidev/ripme/pull/148) — …t before they start. History re-rips are queued with force. The prefix is applied to the save folder only.",
     "2.1.308-1-8fdc918: Built at 2026-11-06T11:02:21Z",
     "2.1.307-1-05f5bfe: Refactor memory management by replacing Byte32Set with Byte16Set in FileHashIndex and UrlHistoryIndex. Enhance heap management in App and MainWindow with HeapPolicy integration. Remove unused Byte32Set class and its associated tests.",
