@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.307-1-05f5bfe",
-  "currentHash": "847e309d676b19de177a04d2135175fd18b215f7294a9216a4e012789b52d0a5",
+  "latestVersion": "2.1.308-1-8fdc918",
+  "currentHash": "af9a70c8ad611431712ccdbd41141825334b40da8d81341717d79746ef3308fa",
   "changeList": [
+    "2.1.308-1-8fdc918: PR #148 - Give queued rips a short delay so force and a folder prefix can be se… (https://github.com/Lazidev/ripme/pull/148) — …t before they start. History re-rips are queued with force. The prefix is applied to the save folder only.",
+    "2.1.308-1-8fdc918: Built at 2026-11-06T11:02:21Z",
     "2.1.307-1-05f5bfe: Refactor memory management by replacing Byte32Set with Byte16Set in FileHashIndex and UrlHistoryIndex. Enhance heap management in App and MainWindow with HeapPolicy integration. Remove unused Byte32Set class and its associated tests.",
     "2.1.307-1-05f5bfe: Built at 2026-10-23T19:09:34Z",
     "2.1.306-1-3dde5c5: Refactor AbstractRipper to remove hash history management and integrate FileHashIndex and UrlHistoryIndex for improved download tracking. Enhance MainWindow with log management and idle heap release functionality to optimize memory usage.",
