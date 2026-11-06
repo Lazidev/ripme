@@ -716,8 +716,13 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         }
         for (HistoryEntry entry : entries) {
             if (entry != null && entry.selected) {
-                added++;
+                String normalized = normalizeQueueUrl(entry.url);
+                if (normalized == null || normalized.isEmpty()) {
+                    continue;
+                }
                 addUrlToQueue(entry.url, true);
+                entry.selected = false;
+                added++;
             }
         }
         return added;
@@ -2334,6 +2339,9 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 JOptionPane.showMessageDialog(null, Utils.getLocalizedString("history.load.none.checked"),
 
                         "RipMe Error", JOptionPane.ERROR_MESSAGE);
+            } else if (historyTableModel != null) {
+                historyTableModel.fireTableDataChanged();
+                saveHistory();
             }
         });
 

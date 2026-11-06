@@ -142,6 +142,8 @@ public class MainWindowQueueUrlNormalizationTest {
         QueueEntry entry = QueueEntry.from(MainWindow.getQueueListModel().get(0));
         assertEquals("https://www.reddit.com/user/bob", entry.getUrl());
         assertTrue(entry.isForceRip());
+        assertFalse(checked.selected);
+        assertFalse(ignored.selected);
         assertEquals("", entry.getFolderPrefix());
         assertTrue(entry.getStartAfterMillis() >= before + MainWindow.QUEUE_AUTOSTART_DELAY_MS);
         assertTrue(entry.getStartAfterMillis() <= after + MainWindow.QUEUE_AUTOSTART_DELAY_MS);
