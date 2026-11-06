@@ -88,6 +88,16 @@ public abstract class AbstractRipper
             new ConsecutiveHttpFailureTracker(httpFailureThreshold);
     private final AtomicBoolean circuitBroken = new AtomicBoolean(false);
     private final AtomicBoolean rateLimitNotified = new AtomicBoolean(false);
+    /** True when this rip was started from a queue item with Force enabled. */
+    private boolean queueForced;
+
+    public void setQueueForced(boolean queueForced) {
+        this.queueForced = queueForced;
+    }
+
+    public boolean isQueueForced() {
+        return queueForced;
+    }
 
     public void stop() {
         logger.trace("stop()");
