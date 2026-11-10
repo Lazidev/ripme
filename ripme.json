@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.310-1-52e9974",
-  "currentHash": "023837e261e97bfe97c0c3571753a79c179ed94baa1b9423e34be7bc7c3da1ec",
+  "latestVersion": "2.1.311-1-d23dfe2",
+  "currentHash": "17a1c2d95c5c98203fac23c6f38384dca611db5fe51521e0bf6fb0ab1aa75c10",
   "changeList": [
+    "2.1.311-1-d23dfe2: PR #152 - Import TableCellEditor so the queue prefix edit compiles. (https://github.com/Lazidev/ripme/pull/152) — # Category This change is exactly one of the following (please change `[ ]` to `[x]`) to indicate which:",
+    "2.1.311-1-d23dfe2: Built at 2026-11-10T15:00:18Z",
     "2.1.310-1-52e9974: PR #150 - Let a queued item re-download files that URL history would skip. (https://github.com/Lazidev/ripme/pull/150) — # Category This change is exactly one of the following (please change `[ ]` to `[x]`) to indicate which:",
     "2.1.310-1-52e9974: Built at 2026-11-06T11:40:54Z",
     "2.1.309-1-01819f7: PR #149 - Cursor/queue force prefix autostart (https://github.com/Lazidev/ripme/pull/149) — # Category This change is exactly one of the following (please change `[ ]` to `[x]`) to indicate which:",
