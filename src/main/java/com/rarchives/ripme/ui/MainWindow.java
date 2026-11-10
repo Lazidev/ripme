@@ -141,7 +141,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     private static final int QUEUE_COL_URL = 0;
     private static final int QUEUE_COL_FORCE = 1;
     private static final int QUEUE_COL_OVERWRITE = 2;
-    private static final int QUEUE_COL_PREFIX = 3;
+    static final int QUEUE_COL_PREFIX = 3;
     private static final int QUEUE_COL_MAX = 4;
     private static final int QUEUE_COLUMN_COUNT = 5;
     private static final ScheduledExecutorService RETRY_SCHEDULER = Executors.newSingleThreadScheduledExecutor(task -> {
@@ -270,7 +270,10 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 }
             }
             Utils.setConfigList("queue", serialized);
-            Utils.saveConfig();
+            // Headless tests share this process with a real config file. Don't write it.
+            if (mainFrame != null) {
+                Utils.saveConfig();
+            }
         }
 
         MainWindow.optionQueue.setText(String.format("%s%s", Utils.getLocalizedString("queue"),
@@ -1006,7 +1009,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
         };
     }
 
-    private static JTextField createFolderPrefixEditor() {
+    static JTextField createFolderPrefixEditor() {
         JTextField field = new JTextField();
         field.setHorizontalAlignment(JTextField.CENTER);
         ((AbstractDocument) field.getDocument()).setDocumentFilter(new DocumentFilter() {
@@ -1014,6 +1017,11 @@ public final class MainWindow implements Runnable, RipStatusHandler {
             public void insertString(DocumentFilter.FilterBypass fb, int offset, String string, AttributeSet attr)
                     throws BadLocationException {
                 replace(fb, offset, 0, string, attr);
+            }
+
+            @Override
+            public void remove(DocumentFilter.FilterBypass fb, int offset, int length) throws BadLocationException {
+                replace(fb, offset, length, "", null);
             }
 
             @Override
@@ -1028,7 +1036,73 @@ public final class MainWindow implements Runnable, RipStatusHandler {
                 super.replace(fb, 0, doc.getLength(), normalized, attrs);
             }
         });
+        // The rip can start while this cell is still being edited. Keep the queue entry
+        // in step with the field, including when the letter is deleted.
+        field.getDocument().addDocumentListener(new DocumentListener() {
+            private void changed() {
+                if (queueTable == null || !queueTable.isEditing()) {
+                    return;
+                }
+                if (queueTable.convertColumnIndexToModel(queueTable.getEditingColumn()) != QUEUE_COL_PREFIX) {
+                    return;
+                }
+                int viewRow = queueTable.getEditingRow();
+                if (viewRow < 0) {
+                    return;
+                }
+                applyQueuedFolderPrefix(queueTable.convertRowIndexToModel(viewRow), field.getText());
+            }
+
+            @Override
+            public void insertUpdate(DocumentEvent e) {
+                changed();
+            }
+
+            @Override
+            public void removeUpdate(DocumentEvent e) {
+                changed();
+            }
+
+            @Override
+            public void changedUpdate(DocumentEvent e) {
+                changed();
+            }
+        });
         return field;
+    }
+
+    /**
+     * Writes the prefix currently shown in the editor onto the queued item.
+     * An empty value clears a prefix that was set earlier.
+     */
+    static void applyQueuedFolderPrefix(int row, String raw) {
+        if (queueListModel == null || row < 0 || row >= queueListModel.size()) {
+            return;
+        }
+        QueueEntry entry = QueueEntry.from(queueListModel.get(row));
+        if (entry == null) {
+            return;
+        }
+        String prefix = Utils.normalizeFolderPrefix(raw);
+        if (prefix.equals(entry.getFolderPrefix())) {
+            return;
+        }
+        entry.setFolderPrefix(prefix);
+        queueListModel.set(row, entry);
+    }
+
+    /**
+     * Saves an in-progress queue edit before a rip reads the row. Otherwise a cleared
+     * prefix still looks empty on screen but the folder is created with the old letter.
+     */
+    private void commitQueueEdits() {
+        if (!SwingUtilities.isEventDispatchThread() || queueTable == null || !queueTable.isEditing()) {
+            return;
+        }
+        TableCellEditor editor = queueTable.getCellEditor();
+        if (editor != null) {
+            editor.stopCellEditing();
+        }
     }
 
     private static Integer parseMaxDownloads(Object value) {
@@ -2764,6 +2838,7 @@ public final class MainWindow implements Runnable, RipStatusHandler {
     }
 
     synchronized void ripNextAlbum() {
+        commitQueueEdits();
         if (queuePaused) {
             LOGGER.debug("Queue is paused; no queued items will be started");
             isRipping = hasActiveDomains();
@@ -3486,6 +3561,10 @@ public final class MainWindow implements Runnable, RipStatusHandler {
 
     public static DefaultListModel<Object> getQueueListModel() {
         return queueListModel;
+    }
+
+    static JTable getQueueTable() {
+        return queueTable;
     }
 
     private static boolean queueContainsUrl(String url) {

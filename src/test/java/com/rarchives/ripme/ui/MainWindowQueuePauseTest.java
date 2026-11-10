@@ -10,7 +10,11 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
+import javax.swing.DefaultCellEditor;
 import javax.swing.DefaultListModel;
+import javax.swing.JTable;
+import javax.swing.JTextField;
+import javax.swing.SwingUtilities;
 
 import org.junit.jupiter.api.Test;
 
@@ -72,5 +76,30 @@ public class MainWindowQueuePauseTest {
         } finally {
             mainWindow.cancelScheduledQueueStart();
         }
+    }
+
+    @Test
+    public void clearedPrefixIsUsedForTheFolderEvenIfTheCellIsStillOpen() throws Exception {
+        MainWindow mainWindow = new MainWindow(true);
+        DefaultListModel<Object> queue = MainWindow.getQueueListModel();
+        queue.clear();
+        mainWindow.getActiveDomainCounts().clear();
+
+        List<String> started = Collections.synchronizedList(new ArrayList<>());
+        mainWindow.setRipperLauncher((url, domain, forceRip, maxDownloads, folderPrefix, overwriteExisting) ->
+                started.add(folderPrefix == null ? "null" : folderPrefix));
+
+        queue.addElement(new QueueEntry("http://example.com/album", false, null, "a", 0L));
+        SwingUtilities.invokeAndWait(() -> {
+            JTable table = MainWindow.getQueueTable();
+            table.getColumnModel().getColumn(MainWindow.QUEUE_COL_PREFIX)
+                    .setCellEditor(new DefaultCellEditor(MainWindow.createFolderPrefixEditor()));
+            assertTrue(table.editCellAt(0, MainWindow.QUEUE_COL_PREFIX), "Prefix cell should be editable");
+            JTextField editor = (JTextField) table.getEditorComponent();
+            editor.setText("");
+            assertEquals("", QueueEntry.from(queue.get(0)).getFolderPrefix());
+            mainWindow.ripNextAlbum();
+        });
+        assertEquals(List.of(""), started);
     }
 }
