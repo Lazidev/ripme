@@ -56,6 +56,7 @@ import javax.swing.event.ListDataEvent;
 import javax.swing.event.ListDataListener;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.table.TableCellEditor;
 import javax.swing.table.TableRowSorter;
 import javax.swing.text.*;
 
