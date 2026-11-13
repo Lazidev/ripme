@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.312-1-8b59d13",
-  "currentHash": "e5b376871e8ac336ea36122e6747f1ee297d2b79a59d9c23bac6787d275afc9c",
+  "latestVersion": "2.1.313-1-c5c0994",
+  "currentHash": "c5278305f158d5d2e9e63af8e9903e6ad394573e678bcfc7a47caae3e2731ca9",
   "changeList": [
+    "2.1.313-1-c5c0994: PR #154 - Send the reels query's Relay provider flags so Instagram accepts the … (https://github.com/Lazidev/ripme/pull/154) — …request. # Category",
+    "2.1.313-1-c5c0994: Built at 2026-11-13T21:23:29Z",
     "2.1.312-1-8b59d13: PR #153 - Fetch Instagram reels through GraphQL because the clips API now retur… (https://github.com/Lazidev/ripme/pull/153) — …ns the app shell. # Category",
     "2.1.312-1-8b59d13: Built at 2026-11-13T21:01:42Z",
     "2.1.311-1-d23dfe2: PR #152 - Import TableCellEditor so the queue prefix edit compiles. (https://github.com/Lazidev/ripme/pull/152) — # Category This change is exactly one of the following (please change `[ ]` to `[x]`) to indicate which:",
