@@ -71,6 +71,19 @@ public class InstagramRipper extends AbstractJSONRipper {
     private static final String GRAPHQL_DOC_ID_PROFILE_POSTS = "34579740524958711";
     private static final String GRAPHQL_FRIENDLY_NAME_PROFILE_POSTS = "PolarisProfilePostsQuery";
     /**
+     * Logged-in reels tab ({@code PolarisProfileReelsTabContentQuery_connection}).
+     * {@code POST /api/v1/clips/user/} now 302s to the HTML app shell.
+     * Instagram rotates this id; a value scraped from the reels page scripts is preferred.
+     */
+    private static final String GRAPHQL_DOC_ID_PROFILE_REELS = "29285972954340351";
+    private static final String GRAPHQL_FRIENDLY_NAME_PROFILE_REELS =
+            "PolarisProfileReelsTabContentQuery_connection";
+    private static final String GRAPHQL_REELS_ROOT_FIELD = "fetch__XDTUserDict";
+    private static final Pattern REELS_DOC_ID_IN_WINDOW = Pattern.compile(
+            "exports=\"(\\d{10,})\"|\"id\"\\s*:\\s*\"(\\d{10,})\"|\\bid\\s*:\\s*\"(\\d{10,})\"");
+    private static final Pattern INSTAGRAM_SCRIPT_URL = Pattern.compile(
+            "https://static\\.cdninstagram\\.com/rsrc\\.php/[A-Za-z0-9_./-]+\\.js");
+    /**
      * Keyword search explore page ({@code /popular/{query}}), used by
      * {@code PolarisKeywordSearchExplorePageRelayQuery}.
      */
@@ -118,6 +131,8 @@ public class InstagramRipper extends AbstractJSONRipper {
     private InstagramGraphqlTokens keywordSearchTokens = null;
     private InstagramGraphqlTokens profileTokens = null;
     private boolean profileTokensAttempted = false;
+    /** True after the first reels page came from GraphQL, so later pages use the same cursor. */
+    private boolean reelsViaGraphql = false;
     private JSONObject bootstrappedProfileTimeline = null;
     private boolean keywordSearchUseRest = false;
     private final int maxDownloads = Utils.getConfigInteger("maxdownloads", -1);
@@ -325,9 +340,29 @@ public class InstagramRipper extends AbstractJSONRipper {
                 throw loginRequiredException("Reels rips require a logged-in Instagram session.");
             }
             ensureProfileGraphqlTokens(username);
-            JSONObject clips = getClipsUserPage(username, null);
-            validateTimelineResponse(clips, username);
-            return clips;
+            IOException graphqlFailure = null;
+            try {
+                JSONObject page = fetchGraphqlReelsPage(username, null);
+                validateTimelineResponse(page, username);
+                reelsViaGraphql = true;
+                return page;
+            } catch (IOException e) {
+                graphqlFailure = e;
+                logger.warn("GraphQL reels first page failed for {}: {}. Trying clips API.",
+                        username, e.getMessage());
+            }
+            try {
+                JSONObject clips = getClipsUserPage(username, null);
+                validateTimelineResponse(clips, username);
+                return clips;
+            } catch (IOException e) {
+                if (graphqlFailure != null) {
+                    e.addSuppressed(graphqlFailure);
+                }
+                throw new IOException("Failed to get Instagram reels for '" + username
+                        + "'. /api/v1/clips/user/ now redirects to the HTML app shell. "
+                        + (graphqlFailure != null ? graphqlFailure.getMessage() : e.getMessage()), e);
+            }
         }
 
         IOException lastFailure = null;
@@ -645,9 +680,332 @@ public class InstagramRipper extends AbstractJSONRipper {
         }
     }
     /**
+     * Fetches a page of reels via {@code PolarisProfileReelsTabContentQuery_connection}.
+     * {@code /api/v1/clips/user/} answers with a 302 to the HTML app shell.
+     */
+    private JSONObject fetchGraphqlReelsPage(String username, String afterCursor) throws IOException {
+        String userId = getUserID(username);
+        if (userId == null || userId.isEmpty()) {
+            throw new IOException("Failed to get user ID for " + username);
+        }
+        ensureProfileGraphqlTokens(username);
+        ensureReelsDocId(username);
+        if (profileTokens == null
+                || profileTokens.lsd == null || profileTokens.lsd.isEmpty()
+                || profileTokens.fbDtsg == null || profileTokens.fbDtsg.isEmpty()) {
+            throw new IOException("Instagram reels GraphQL needs lsd/fb_dtsg from the profile page for "
+                    + username);
+        }
+
+        JSONObject variables = buildReelsVariables(userId, afterCursor);
+        List<String> docIds = reelsDocIds();
+        IOException lastException = null;
+        for (String requestUrl : Arrays.asList(
+                "https://www.instagram.com/graphql/query",
+                "https://www.instagram.com/api/graphql")) {
+            boolean endpointRejectedShape = false;
+            for (String docId : docIds) {
+                if (endpointRejectedShape) {
+                    break;
+                }
+                try {
+                    JSONObject json = postInstagramGraphql(requestUrl,
+                            "https://www.instagram.com/" + username + "/reels/",
+                            docId, GRAPHQL_FRIENDLY_NAME_PROFILE_REELS, GRAPHQL_REELS_ROOT_FIELD,
+                            variables, "GraphQL reels for " + username);
+                    return convertClipsGraphqlToTimeline(json);
+                } catch (IOException e) {
+                    lastException = e;
+                    String message = e.getMessage() == null ? "" : e.getMessage();
+                    if (message.contains("HTML instead of JSON")) {
+                        endpointRejectedShape = true;
+                    }
+                    if (e.getCause() instanceof InstagramBotBlockedException) {
+                        throw e;
+                    }
+                    logger.warn("GraphQL reels {} doc_id={} failed for {}: {}",
+                            requestUrl, docId, username, e.getMessage());
+                }
+            }
+        }
+        throw lastException != null
+                ? lastException
+                : new IOException("GraphQL reels failed for " + username);
+    }
+
+    /** Package-private for unit tests. */
+    JSONObject buildReelsVariables(String userId, String afterCursor) {
+        JSONObject data = new JSONObject();
+        data.put("include_feed_video", true);
+        data.put("page_size", 12);
+        data.put("target_user_id", userId);
+        JSONObject variables = new JSONObject();
+        variables.put("after", afterCursor != null && !afterCursor.isEmpty() ? afterCursor : JSONObject.NULL);
+        variables.put("data", data);
+        variables.put("first", 12);
+        variables.put("id", userId);
+        return variables;
+    }
+
+    private List<String> reelsDocIds() {
+        List<String> docIds = new ArrayList<>();
+        if (profileTokens != null && profileTokens.profileReelsDocId != null
+                && !profileTokens.profileReelsDocId.isEmpty()) {
+            docIds.add(profileTokens.profileReelsDocId);
+        }
+        docIds.add(GRAPHQL_DOC_ID_PROFILE_REELS);
+        docIds.add("27234427476213202");
+        docIds.add("7845543455542541");
+        List<String> unique = new ArrayList<>();
+        for (String docId : docIds) {
+            if (docId != null && !docId.isEmpty() && !unique.contains(docId)) {
+                unique.add(docId);
+            }
+        }
+        return unique;
+    }
+
+    private void ensureReelsDocId(String username) {
+        if (profileTokens != null && profileTokens.profileReelsDocId != null
+                && !profileTokens.profileReelsDocId.isEmpty()) {
+            return;
+        }
+        String pageUrl = "https://www.instagram.com/" + username + "/reels/";
+        try {
+            Response response = loadInstagramDocument(pageUrl, "https://www.instagram.com/" + username + "/");
+            String html = response.body();
+            if (html == null || html.isBlank()) {
+                logger.warn("Empty Instagram reels page for {}", username);
+                return;
+            }
+            InstagramGraphqlTokens parsed = parseGraphqlTokens(html);
+            if (profileTokens == null) {
+                profileTokens = parsed;
+            } else {
+                if (profileTokens.lsd == null || profileTokens.lsd.isEmpty()) {
+                    profileTokens.lsd = parsed.lsd;
+                }
+                if (profileTokens.fbDtsg == null || profileTokens.fbDtsg.isEmpty()) {
+                    profileTokens.fbDtsg = parsed.fbDtsg;
+                }
+                if (profileTokens.actorId == null || profileTokens.actorId.isEmpty()) {
+                    profileTokens.actorId = parsed.actorId;
+                }
+                if (profileTokens.clientRevision == null || profileTokens.clientRevision.isEmpty()) {
+                    profileTokens.clientRevision = parsed.clientRevision;
+                }
+            }
+            if (profileTokens.actorId == null || profileTokens.actorId.isEmpty()) {
+                profileTokens.actorId = cookies.getOrDefault("ds_user_id", "0");
+            }
+            String docId = matchReelsDocId(html);
+            if (docId == null) {
+                docId = findReelsDocIdInBundles(html);
+            }
+            if (docId != null) {
+                profileTokens.profileReelsDocId = docId;
+                logger.info("Using Instagram reels doc_id {}", docId);
+            } else {
+                logger.info("Reels page did not include a doc_id; using {}", GRAPHQL_DOC_ID_PROFILE_REELS);
+            }
+        } catch (IOException e) {
+            logger.warn("Failed to load Instagram reels page for {}: {}", username, e.getMessage());
+        }
+    }
+
+    private String findReelsDocIdInBundles(String html) {
+        List<String> scripts = extractInstagramScriptUrls(html);
+        if (scripts.isEmpty()) {
+            return null;
+        }
+        logger.info("Looking up Instagram reels doc_id in {} page script(s)", scripts.size());
+        int fetched = 0;
+        for (String scriptUrl : scripts) {
+            if (fetched >= 15) {
+                break;
+            }
+            fetched++;
+            try {
+                paceInstagramRequest();
+                Response response = Http.url(scriptUrl)
+                        .timeout(TIMEOUT)
+                        .userAgent(INSTAGRAM_USER_AGENT)
+                        .header("Accept", "*/*")
+                        .ignoreContentType()
+                        .ignoreHttpErrors()
+                        .response();
+                if (response.statusCode() != 200) {
+                    continue;
+                }
+                String docId = matchReelsDocId(response.body());
+                if (docId != null) {
+                    return docId;
+                }
+            } catch (IOException e) {
+                logger.debug("Instagram script {} failed: {}", scriptUrl, e.getMessage());
+            }
+        }
+        return null;
+    }
+
+    /** Package-private for unit tests. */
+    static List<String> extractInstagramScriptUrls(String html) {
+        List<String> urls = new ArrayList<>();
+        if (html == null || html.isEmpty()) {
+            return urls;
+        }
+        Matcher matcher = INSTAGRAM_SCRIPT_URL.matcher(html.replace("\\/", "/"));
+        while (matcher.find()) {
+            String url = matcher.group();
+            if (!urls.contains(url)) {
+                urls.add(url);
+            }
+        }
+        return urls;
+    }
+
+    /**
+     * Finds the persisted-query id next to {@code PolarisProfileReelsTabContentQuery_connection}
+     * in profile HTML or a CDN script. Package-private for unit tests.
+     */
+    static String matchReelsDocId(String text) {
+        if (text == null || text.isEmpty()) {
+            return null;
+        }
+        String marker = "PolarisProfileReelsTabContentQuery_connection";
+        int from = 0;
+        while (from < text.length()) {
+            int at = text.indexOf(marker, from);
+            if (at < 0) {
+                break;
+            }
+            int start = Math.max(0, at - 250);
+            int end = Math.min(text.length(), at + marker.length() + 2000);
+            Matcher matcher = REELS_DOC_ID_IN_WINDOW.matcher(text.substring(start, end));
+            if (matcher.find()) {
+                for (int group = 1; group <= matcher.groupCount(); group++) {
+                    if (matcher.group(group) != null) {
+                        return matcher.group(group);
+                    }
+                }
+            }
+            from = at + marker.length();
+        }
+        return null;
+    }
+
+    /**
+     * Reshapes a reels-tab GraphQL payload into {@code data.user.edge_owner_to_timeline_media}.
+     * The web client returns {@code data.fetch__XDTUserDict} with a nested {@code edges} array.
+     * Package-private for unit tests.
+     */
+    JSONObject convertClipsGraphqlToTimeline(JSONObject json) throws IOException {
+        if (json == null) {
+            throw new IOException("Reels GraphQL response missing JSON");
+        }
+        JSONObject data = json.optJSONObject("data");
+        if (data == null) {
+            throw new IOException(graphqlErrorMessage(json, "Reels GraphQL response missing data"));
+        }
+        JSONObject connection = findClipsConnection(data);
+        if (connection == null) {
+            throw new IOException(graphqlErrorMessage(json, "Reels GraphQL response missing clips connection"));
+        }
+
+        JSONArray edgesIn = connection.optJSONArray("edges");
+        if (edgesIn == null) {
+            edgesIn = new JSONArray();
+        }
+        JSONArray edgesOut = new JSONArray();
+        for (int i = 0; i < edgesIn.length(); i++) {
+            JSONObject edge = edgesIn.optJSONObject(i);
+            if (edge == null) {
+                continue;
+            }
+            JSONObject nodeMedia = edge.optJSONObject("node");
+            if (nodeMedia == null) {
+                continue;
+            }
+            JSONObject media = nodeMedia.optJSONObject("media");
+            if (media == null) {
+                media = nodeMedia;
+            }
+            JSONObject node = mediaToNode(media);
+            if (node == null) {
+                continue;
+            }
+            JSONObject outEdge = new JSONObject();
+            outEdge.put("node", node);
+            edgesOut.put(outEdge);
+        }
+
+        JSONObject pageInfo = connection.optJSONObject("page_info");
+        if (pageInfo == null) {
+            pageInfo = new JSONObject();
+            pageInfo.put("has_next_page", false);
+        }
+
+        JSONObject timelineMedia = new JSONObject();
+        timelineMedia.put("edges", edgesOut);
+        timelineMedia.put("page_info", pageInfo);
+        JSONObject user = new JSONObject();
+        user.put("edge_owner_to_timeline_media", timelineMedia);
+        JSONObject dataOut = new JSONObject();
+        dataOut.put("user", user);
+        JSONObject result = new JSONObject();
+        result.put("data", dataOut);
+        return result;
+    }
+
+    private JSONObject findClipsConnection(JSONObject data) {
+        String[] keys = {
+                GRAPHQL_REELS_ROOT_FIELD,
+                "xdt_api__v1__clips__user__connection_v2",
+                "xdt_api__v1__clips__user__connection"
+        };
+        for (String key : keys) {
+            JSONObject candidate = data.optJSONObject(key);
+            JSONObject withEdges = nestedEdges(candidate);
+            if (withEdges != null) {
+                return withEdges;
+            }
+        }
+        return nestedEdges(data);
+    }
+
+    private static JSONObject nestedEdges(JSONObject obj) {
+        if (obj == null) {
+            return null;
+        }
+        if (obj.has("edges")) {
+            return obj;
+        }
+        for (String key : obj.keySet()) {
+            JSONObject child = obj.optJSONObject(key);
+            if (child != null && child.has("edges")) {
+                return child;
+            }
+        }
+        return null;
+    }
+
+    private static String graphqlErrorMessage(JSONObject json, String fallback) {
+        JSONArray errors = json.optJSONArray("errors");
+        if (errors != null && errors.length() > 0) {
+            JSONObject first = errors.optJSONObject(0);
+            if (first != null) {
+                String message = first.optString("message", "");
+                if (!message.isEmpty()) {
+                    return message;
+                }
+            }
+        }
+        return fallback;
+    }
+
+    /**
      * Fetches a page of a user's reels via the private {@code /api/v1/clips/user/} endpoint.
-     * Unlike the web reels-tab GraphQL query (which only returns cover images), this endpoint
-     * returns full media objects including {@code video_versions}, so we can download the videos.
+     * Instagram currently redirects this route to the HTML app shell; GraphQL is tried first.
      * The response is normalized into the same shape {@link #getURLsFromJSON(JSONObject)} expects.
      */
     private JSONObject getClipsUserPage(String username, String maxId) throws IOException {
@@ -1491,6 +1849,9 @@ public class InstagramRipper extends AbstractJSONRipper {
 
         String username = getUsername(url);
         if (isReelsUrl(url)) {
+            if (reelsViaGraphql) {
+                return fetchGraphqlReelsPage(username, endCursor);
+            }
             return getClipsUserPage(username, endCursor);
         }
 
@@ -1839,6 +2200,7 @@ public class InstagramRipper extends AbstractJSONRipper {
         String pageQuery;
         String profilePostsDocId;
         String profilePostsFriendlyName;
+        String profileReelsDocId;
     }
 
     /**
@@ -2132,6 +2494,14 @@ public class InstagramRipper extends AbstractJSONRipper {
 
     private JSONObject postProfileTimeline(String requestUrl, String username, String docId,
             String friendlyName, JSONObject variables) throws IOException {
+        return postInstagramGraphql(requestUrl,
+                "https://www.instagram.com/" + username + "/",
+                docId, friendlyName, null, variables,
+                "GraphQL timeline for " + username);
+    }
+
+    private JSONObject postInstagramGraphql(String requestUrl, String referer, String docId,
+            String friendlyName, String rootField, JSONObject variables, String action) throws IOException {
         boolean relay = profileTokens != null
                 && profileTokens.lsd != null && !profileTokens.lsd.isEmpty()
                 && profileTokens.fbDtsg != null && !profileTokens.fbDtsg.isEmpty();
@@ -2139,7 +2509,7 @@ public class InstagramRipper extends AbstractJSONRipper {
                 ? buildRelayForm(profileTokens, friendlyName, docId, variables.toString())
                 : legacyGraphqlForm(docId, variables.toString());
 
-        logger.debug("Fetching Instagram GraphQL timeline {} doc_id={} relay={}", requestUrl, docId, relay);
+        logger.debug("Fetching Instagram GraphQL {} doc_id={} relay={}", action, docId, relay);
         paceInstagramRequest();
 
         Http request = Http.url(requestUrl)
@@ -2154,13 +2524,16 @@ public class InstagramRipper extends AbstractJSONRipper {
                 .header("X-ASBD-ID", INSTAGRAM_GRAPHQL_ASBD_ID)
                 .header("X-FB-Friendly-Name", friendlyName)
                 .header("Origin", "https://www.instagram.com")
-                .header("Referer", "https://www.instagram.com/" + username + "/")
+                .header("Referer", referer)
                 .header("Sec-Fetch-Dest", "empty")
                 .header("Sec-Fetch-Mode", "cors")
                 .header("Sec-Fetch-Site", "same-origin")
                 .cookies(cookies)
                 .ignoreContentType()
                 .ignoreHttpErrors();
+        if (rootField != null && !rootField.isEmpty()) {
+            request.header("X-Root-Field-Name", rootField);
+        }
         if (relay) {
             request.header("X-FB-LSD", profileTokens.lsd);
         }
@@ -2173,18 +2546,18 @@ public class InstagramRipper extends AbstractJSONRipper {
         if (statusCode == 429) {
             boolean likelyBotBlock = body == null || body.trim().isEmpty();
             if (likelyBotBlock) {
-                throw new IOException("Instagram blocked request while GraphQL timeline for " + username,
+                throw new IOException("Instagram blocked request while " + action,
                         new InstagramBotBlockedException(
-                                "Instagram blocked request while GraphQL timeline for " + username));
+                                "Instagram blocked request while " + action));
             }
             throw new IOException("Rate limited by Instagram GraphQL pagination.");
         }
         if (statusCode != 200) {
-            throw new IOException("GraphQL timeline HTTP " + statusCode + " for " + username
+            throw new IOException("GraphQL HTTP " + statusCode + " while " + action
                     + ". Response starts: " + summarizeBody(body));
         }
 
-        return parseInstagramJsonBody(body, "GraphQL timeline for " + username);
+        return parseInstagramJsonBody(body, action);
     }
 
     private Map<String, String> legacyGraphqlForm(String docId, String variables) {
