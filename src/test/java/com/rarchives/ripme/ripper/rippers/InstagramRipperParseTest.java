@@ -352,6 +352,92 @@ public class InstagramRipperParseTest {
     }
 
     @Test
+    void reelsVariablesUseTargetUserIdAndCursor() throws Exception {
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/reels/"));
+        JSONObject first = ripper.buildReelsVariables("12345", null);
+        assertEquals("12345", first.getString("id"));
+        assertEquals(12, first.getInt("first"));
+        assertTrue(first.isNull("after"));
+        JSONObject data = first.getJSONObject("data");
+        assertEquals("12345", data.getString("target_user_id"));
+        assertTrue(data.getBoolean("include_feed_video"));
+
+        JSONObject next = ripper.buildReelsVariables("12345", "cursor9");
+        assertEquals("cursor9", next.getString("after"));
+    }
+
+    @Test
+    void convertsReelsGraphqlUserDictIntoVideoTimeline() throws Exception {
+        JSONObject media = new JSONObject();
+        media.put("media_type", 2);
+        media.put("code", "REEL1");
+        media.put("video_versions", new JSONArray().put(new JSONObject()
+                .put("url", "https://example.com/reel.mp4")));
+        media.put("image_versions2", new JSONObject().put("candidates", new JSONArray()
+                .put(new JSONObject().put("url", "https://example.com/cover.jpg"))));
+        JSONObject connection = new JSONObject();
+        connection.put("edges", new JSONArray().put(new JSONObject().put("node", media)));
+        connection.put("page_info", new JSONObject()
+                .put("has_next_page", true)
+                .put("end_cursor", "next-reel"));
+        JSONObject userDict = new JSONObject().put("clips", connection);
+        JSONObject json = new JSONObject().put("data", new JSONObject()
+                .put("fetch__XDTUserDict", userDict));
+
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/reels/"));
+        JSONObject timeline = ripper.convertClipsGraphqlToTimeline(json);
+        List<String> urls = ripper.getURLsFromJSON(timeline);
+        assertEquals(1, urls.size());
+        assertEquals("https://example.com/reel.mp4", urls.get(0));
+    }
+
+    @Test
+    void convertsWrappedClipsMediaNodes() throws Exception {
+        JSONObject media = new JSONObject();
+        media.put("video_versions", new JSONArray().put(new JSONObject()
+                .put("url", "https://example.com/wrapped.mp4")));
+        JSONObject connection = new JSONObject();
+        connection.put("edges", new JSONArray().put(new JSONObject().put("node",
+                new JSONObject().put("media", media))));
+        connection.put("page_info", new JSONObject().put("has_next_page", false));
+        JSONObject json = new JSONObject().put("data", new JSONObject()
+                .put("xdt_api__v1__clips__user__connection_v2", connection));
+
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/reels/"));
+        List<String> urls = ripper.getURLsFromJSON(ripper.convertClipsGraphqlToTimeline(json));
+        assertEquals(1, urls.size());
+        assertEquals("https://example.com/wrapped.mp4", urls.get(0));
+    }
+
+    @Test
+    void reelsGraphqlErrorWithoutDataIsReported() throws Exception {
+        JSONObject json = new JSONObject().put("errors", new JSONArray().put(
+                new JSONObject().put("message", "missing_required_variable_value")));
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/reels/"));
+        IOException ex = assertThrows(IOException.class, () -> ripper.convertClipsGraphqlToTimeline(json));
+        assertTrue(ex.getMessage().contains("missing_required_variable_value"), ex.getMessage());
+    }
+
+    @Test
+    void matchesReelsDocIdNextToRelayOperation() {
+        String script = "__d(\"PolarisProfileReelsTabContentQuery_connection_instagramRelayOperation\",[],"
+                + "(function(a,b,c,d,e,f){e.exports=\"29285972954340351\"}))";
+        assertEquals("29285972954340351", InstagramRipper.matchReelsDocId(script));
+        assertTrue(InstagramRipper.matchReelsDocId("<html>no query here</html>") == null);
+    }
+
+    @Test
+    void extractsCdnScriptUrlsFromEscapedHtml() {
+        String html = "<link href=\"https:\\/\\/static.cdninstagram.com\\/rsrc.php\\/v4\\/yL\\/r\\/abc.js\">"
+                + "<script src=\"https://static.cdninstagram.com/rsrc.php/v4/yA/r/def.js\"></script>"
+                + "<script src=\"https://static.cdninstagram.com/rsrc.php/v4/yA/r/def.js\"></script>";
+        List<String> urls = InstagramRipper.extractInstagramScriptUrls(html);
+        assertEquals(2, urls.size());
+        assertEquals("https://static.cdninstagram.com/rsrc.php/v4/yL/r/abc.js", urls.get(0));
+        assertEquals("https://static.cdninstagram.com/rsrc.php/v4/yA/r/def.js", urls.get(1));
+    }
+
+    @Test
     void parsesGraphqlBodyWithFacebookAntiHijackPrefix() throws Exception {
         InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/"));
         JSONObject json = ripper.parseInstagramJsonBody(
