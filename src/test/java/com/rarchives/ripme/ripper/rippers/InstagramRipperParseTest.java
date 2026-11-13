@@ -367,6 +367,25 @@ public class InstagramRipperParseTest {
     }
 
     @Test
+    void reelsVariablesIncludeRelayProvidersFromTheQuery() throws Exception {
+        InstagramRipper ripper = new InstagramRipper(new URL("https://www.instagram.com/testuser/reels/"));
+        JSONObject variables = ripper.buildReelsVariables("12345", null,
+                java.util.Arrays.asList("PolarisSEOIsCrawler", "PolarisShortDramaEnabled"));
+        assertEquals(false, variables.getBoolean("__relay_internal__pv__PolarisSEOIsCrawlerrelayprovider"));
+        assertEquals(true, variables.getBoolean("__relay_internal__pv__PolarisShortDramaEnabledrelayprovider"));
+    }
+
+    @Test
+    void matchesReelsRelayProvidersFromParametersModule() {
+        String script = "__d(\"PolarisProfileReelsTabContentQuery_connection$Parameters\","
+                + "[\"PolarisShortDramaEnabled.relayprovider\",\"PolarisSEOIsCrawler.relayprovider\","
+                + "\"OtherModule\"],(function(){}))";
+        List<String> providers = InstagramRipper.matchReelsRelayProviders(script);
+        assertEquals(java.util.Arrays.asList("PolarisShortDramaEnabled", "PolarisSEOIsCrawler"), providers);
+        assertTrue(InstagramRipper.matchReelsRelayProviders("no module here").isEmpty());
+    }
+
+    @Test
     void convertsReelsGraphqlUserDictIntoVideoTimeline() throws Exception {
         JSONObject media = new JSONObject();
         media.put("media_type", 2);
@@ -435,6 +454,15 @@ public class InstagramRipperParseTest {
         assertEquals(2, urls.size());
         assertEquals("https://static.cdninstagram.com/rsrc.php/v4/yL/r/abc.js", urls.get(0));
         assertEquals("https://static.cdninstagram.com/rsrc.php/v4/yA/r/def.js", urls.get(1));
+    }
+
+    @Test
+    void ignoresBareScriptUrlsWhenALinkedScriptIsPresent() {
+        String html = "<link href=\"https://static.cdninstagram.com/rsrc.php/v4/yL/r/abc.js\">"
+                + "https://static.cdninstagram.com/rsrc.php/v4/yA/r/noise.js";
+        List<String> urls = InstagramRipper.extractInstagramScriptUrls(html);
+        assertEquals(1, urls.size());
+        assertEquals("https://static.cdninstagram.com/rsrc.php/v4/yL/r/abc.js", urls.get(0));
     }
 
     @Test

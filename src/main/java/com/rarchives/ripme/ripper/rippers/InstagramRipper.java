@@ -83,6 +83,12 @@ public class InstagramRipper extends AbstractJSONRipper {
             "exports=\"(\\d{10,})\"|\"id\"\\s*:\\s*\"(\\d{10,})\"|\\bid\\s*:\\s*\"(\\d{10,})\"");
     private static final Pattern INSTAGRAM_SCRIPT_URL = Pattern.compile(
             "https://static\\.cdninstagram\\.com/rsrc\\.php/[A-Za-z0-9_./-]+\\.js");
+    private static final Pattern INSTAGRAM_LINKED_SCRIPT_URL = Pattern.compile(
+            "(?:href|src)=\"(https://static\\.cdninstagram\\.com/rsrc\\.php/[^\"]+\\.js)\"");
+    /** Dependency list of the reels query's {@code .graphql} or {@code $Parameters} module. */
+    private static final Pattern REELS_RELAY_PARAMS_MODULE = Pattern.compile(
+            "PolarisProfileReelsTabContentQuery_connection(?:\\.graphql|\\$Parameters)\"\\s*,\\s*\\[([^\\]]*)\\]");
+    private static final Pattern RELAY_PROVIDER_MODULE = Pattern.compile("\"([A-Za-z0-9_]+)\\.relayprovider\"");
     /**
      * Keyword search explore page ({@code /popular/{query}}), used by
      * {@code PolarisKeywordSearchExplorePageRelayQuery}.
@@ -697,7 +703,12 @@ public class InstagramRipper extends AbstractJSONRipper {
                     + username);
         }
 
-        JSONObject variables = buildReelsVariables(userId, afterCursor);
+        List<String> relayProviders = profileTokens.profileReelsRelayProviders;
+        if (relayProviders == null || relayProviders.isEmpty()) {
+            logger.warn("Instagram reels query did not include relay provider variables. "
+                    + "Instagram may reject it with missing_required_variable_value.");
+        }
+        JSONObject variables = buildReelsVariables(userId, afterCursor, relayProviders);
         List<String> docIds = reelsDocIds();
         IOException lastException = null;
         for (String requestUrl : Arrays.asList(
@@ -735,6 +746,11 @@ public class InstagramRipper extends AbstractJSONRipper {
 
     /** Package-private for unit tests. */
     JSONObject buildReelsVariables(String userId, String afterCursor) {
+        return buildReelsVariables(userId, afterCursor, null);
+    }
+
+    /** Package-private for unit tests. */
+    JSONObject buildReelsVariables(String userId, String afterCursor, List<String> relayProviders) {
         JSONObject data = new JSONObject();
         data.put("include_feed_video", true);
         data.put("page_size", 12);
@@ -744,6 +760,17 @@ public class InstagramRipper extends AbstractJSONRipper {
         variables.put("data", data);
         variables.put("first", 12);
         variables.put("id", userId);
+        if (relayProviders != null) {
+            for (String provider : relayProviders) {
+                if (provider == null || provider.isEmpty()) {
+                    continue;
+                }
+                // PolarisSEOIsCrawler is a normal logged-in session's "off" gate.
+                // Every other relay provider the web client sends is on.
+                variables.put("__relay_internal__pv__" + provider + "relayprovider",
+                        !"PolarisSEOIsCrawler".equals(provider));
+            }
+        }
         return variables;
     }
 
@@ -767,7 +794,8 @@ public class InstagramRipper extends AbstractJSONRipper {
 
     private void ensureReelsDocId(String username) {
         if (profileTokens != null && profileTokens.profileReelsDocId != null
-                && !profileTokens.profileReelsDocId.isEmpty()) {
+                && !profileTokens.profileReelsDocId.isEmpty()
+                && profileTokens.profileReelsRelayProviders != null) {
             return;
         }
         String pageUrl = "https://www.instagram.com/" + username + "/reels/";
@@ -798,35 +826,48 @@ public class InstagramRipper extends AbstractJSONRipper {
             if (profileTokens.actorId == null || profileTokens.actorId.isEmpty()) {
                 profileTokens.actorId = cookies.getOrDefault("ds_user_id", "0");
             }
+            List<String> relayProviders = matchReelsRelayProviders(html);
             String docId = matchReelsDocId(html);
-            if (docId == null) {
-                docId = findReelsDocIdInBundles(html);
+            if (docId == null || relayProviders.isEmpty()) {
+                String bundledDocId = findReelsDocIdInBundles(html, relayProviders);
+                if (docId == null) {
+                    docId = bundledDocId;
+                }
             }
+            profileTokens.profileReelsRelayProviders = relayProviders;
             if (docId != null) {
                 profileTokens.profileReelsDocId = docId;
                 logger.info("Using Instagram reels doc_id {}", docId);
             } else {
                 logger.info("Reels page did not include a doc_id; using {}", GRAPHQL_DOC_ID_PROFILE_REELS);
             }
+            if (relayProviders.isEmpty()) {
+                logger.warn("Reels page scripts did not list relay provider variables.");
+            } else {
+                logger.info("Using Instagram reels relay providers: {}", String.join(", ", relayProviders));
+            }
         } catch (IOException e) {
             logger.warn("Failed to load Instagram reels page for {}: {}", username, e.getMessage());
         }
     }
 
-    private String findReelsDocIdInBundles(String html) {
+    private String findReelsDocIdInBundles(String html, List<String> relayProviders) {
         List<String> scripts = extractInstagramScriptUrls(html);
         if (scripts.isEmpty()) {
             return null;
         }
         logger.info("Looking up Instagram reels doc_id in {} page script(s)", scripts.size());
+        String docId = null;
         int fetched = 0;
         for (String scriptUrl : scripts) {
-            if (fetched >= 15) {
+            if (fetched >= 40) {
+                break;
+            }
+            if (docId != null && !relayProviders.isEmpty()) {
                 break;
             }
             fetched++;
             try {
-                paceInstagramRequest();
                 Response response = Http.url(scriptUrl)
                         .timeout(TIMEOUT)
                         .userAgent(INSTAGRAM_USER_AGENT)
@@ -837,31 +878,67 @@ public class InstagramRipper extends AbstractJSONRipper {
                 if (response.statusCode() != 200) {
                     continue;
                 }
-                String docId = matchReelsDocId(response.body());
-                if (docId != null) {
-                    return docId;
+                String body = response.body();
+                if (docId == null) {
+                    docId = matchReelsDocId(body);
+                }
+                if (relayProviders.isEmpty()) {
+                    relayProviders.addAll(matchReelsRelayProviders(body));
                 }
             } catch (IOException e) {
                 logger.debug("Instagram script {} failed: {}", scriptUrl, e.getMessage());
             }
         }
-        return null;
+        return docId;
     }
 
     /** Package-private for unit tests. */
     static List<String> extractInstagramScriptUrls(String html) {
-        List<String> urls = new ArrayList<>();
         if (html == null || html.isEmpty()) {
-            return urls;
+            return new ArrayList<>();
         }
-        Matcher matcher = INSTAGRAM_SCRIPT_URL.matcher(html.replace("\\/", "/"));
+        String normalized = html.replace("\\/", "/");
+        List<String> linked = matchScriptUrls(normalized, INSTAGRAM_LINKED_SCRIPT_URL, 1);
+        if (!linked.isEmpty()) {
+            return linked;
+        }
+        return matchScriptUrls(normalized, INSTAGRAM_SCRIPT_URL, 0);
+    }
+
+    private static List<String> matchScriptUrls(String text, Pattern pattern, int group) {
+        List<String> urls = new ArrayList<>();
+        Matcher matcher = pattern.matcher(text);
         while (matcher.find()) {
-            String url = matcher.group();
+            String url = matcher.group(group);
             if (!urls.contains(url)) {
                 urls.add(url);
             }
         }
         return urls;
+    }
+
+    /**
+     * Relay provider modules the reels query requires, taken from its
+     * {@code $Parameters} or {@code .graphql} dependency list.
+     * Names are the module base ({@code PolarisSEOIsCrawler}), not the request key.
+     * Package-private for unit tests.
+     */
+    static List<String> matchReelsRelayProviders(String text) {
+        List<String> providers = new ArrayList<>();
+        if (text == null || text.isEmpty()) {
+            return providers;
+        }
+        Matcher modules = REELS_RELAY_PARAMS_MODULE.matcher(text);
+        while (modules.find()) {
+            Matcher provider = RELAY_PROVIDER_MODULE.matcher(modules.group(1));
+            while (provider.find()) {
+                String name = provider.group(1);
+                if (!providers.contains(name)) {
+                    providers.add(name);
+                }
+            }
+        }
+        return providers;
     }
 
     /**
@@ -909,7 +986,8 @@ public class InstagramRipper extends AbstractJSONRipper {
         }
         JSONObject connection = findClipsConnection(data);
         if (connection == null) {
-            throw new IOException(graphqlErrorMessage(json, "Reels GraphQL response missing clips connection"));
+            throw new IOException(graphqlErrorMessage(json,
+                    "Reels GraphQL response missing clips connection (data keys: " + data.keySet() + ")"));
         }
 
         JSONArray edgesIn = connection.optJSONArray("edges");
@@ -2201,6 +2279,7 @@ public class InstagramRipper extends AbstractJSONRipper {
         String profilePostsDocId;
         String profilePostsFriendlyName;
         String profileReelsDocId;
+        List<String> profileReelsRelayProviders;
     }
 
     /**
