@@ -1,7 +1,9 @@
 {
-  "latestVersion": "2.1.311-1-d23dfe2",
-  "currentHash": "17a1c2d95c5c98203fac23c6f38384dca611db5fe51521e0bf6fb0ab1aa75c10",
+  "latestVersion": "2.1.312-1-8b59d13",
+  "currentHash": "e5b376871e8ac336ea36122e6747f1ee297d2b79a59d9c23bac6787d275afc9c",
   "changeList": [
+    "2.1.312-1-8b59d13: PR #153 - Fetch Instagram reels through GraphQL because the clips API now retur… (https://github.com/Lazidev/ripme/pull/153) — …ns the app shell. # Category",
+    "2.1.312-1-8b59d13: Built at 2026-11-13T21:01:42Z",
     "2.1.311-1-d23dfe2: PR #152 - Import TableCellEditor so the queue prefix edit compiles. (https://github.com/Lazidev/ripme/pull/152) — # Category This change is exactly one of the following (please change `[ ]` to `[x]`) to indicate which:",
     "2.1.311-1-d23dfe2: Built at 2026-11-10T15:00:18Z",
     "2.1.310-1-52e9974: PR #150 - Let a queued item re-download files that URL history would skip. (https://github.com/Lazidev/ripme/pull/150) — # Category This change is exactly one of the following (please change `[ ]` to `[x]`) to indicate which:",
